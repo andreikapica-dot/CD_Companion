@@ -1,5 +1,0 @@
-pymem>=1.13,<2
-websockets>=12.0,<14
-PyQt5>=5.15,<6
-PyQtWebEngine>=5.15,<6
-pywebview>=6.2,<7
