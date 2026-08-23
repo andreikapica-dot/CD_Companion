@@ -1,3 +1,16 @@
+## Current GitHub update
+
+### Added
+- Greymane Codex (`crimsondesert.co/map`) support in Full mode and the browser extension.
+- Browser extension source version 1.1.4 in `browser-extension/`.
+- Screen-space player marker compatible with dynamic map reinitialization.
+
+### Fixed
+- Full mode now restores the crosshair, Waypoints button, Nearby button, and center teleport control when the Greymane page removes them during hydration.
+- Player marker remains visible after the Greymane map instance is replaced.
+- Crosshair alignment now uses the active map viewport and its sidebar padding.
+- Nearby controls respect the enabled Full-mode setting instead of stale browser storage.
+
 ## v0.11.04
 
 ### Added

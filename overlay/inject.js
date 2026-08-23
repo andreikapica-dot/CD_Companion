@@ -922,22 +922,35 @@
   function getNearbyLocations() {
     if (!lastPos || !map) return [];
     try {
-      const features = map.getStyle().sources['locations-data']?.data?.features;
+      const isGreymane = window.__cdMapProvider === 'greymane';
+      const sourceId = isGreymane ? 'markers-source' : 'locations-data';
+      const source = map.getSource?.(sourceId);
+      const styleSource = map.getStyle?.().sources?.[sourceId];
+      let features = source?._data?.features || styleSource?.data?.features;
+      if (!features && typeof map.querySourceFeatures === 'function') {
+        features = map.querySourceFeatures(sourceId);
+      }
       if (!features) return [];
       const t = _nearbyThreshold();
       return features
         .reduce((acc, f) => {
-          const categoryId = f.properties.category_id;
-          if (!_isMapGenieCategoryVisible(categoryId)) return acc;
+          const properties = f.properties || {};
+          const categoryId = isGreymane
+            ? properties.categoryId
+            : properties.category_id;
+          if (!isGreymane && !_isMapGenieCategoryVisible(categoryId)) return acc;
           const [lng, lat] = f.geometry.coordinates;
           const dx = lng - lastPos.lng, dy = lat - lastPos.lat;
           const d2 = dx * dx + dy * dy;
-          const details = _getLocationDetails(f.properties.locationId);
-          const category = details?.category || _getCategoryName(categoryId);
+          const locationId = isGreymane ? properties.id : properties.locationId;
+          const details = isGreymane ? null : _getLocationDetails(locationId);
+          const category = isGreymane
+            ? (properties.categoryName || '')
+            : (details?.category || _getCategoryName(categoryId));
           if (d2 <= t * t) acc.push({
-            id: String(f.properties.locationId),
-            title: details?.title || f.properties.title || `Location ${f.properties.locationId}`,
-            found: !!(window.user?.locations?.[f.properties.locationId]),
+            id: String(locationId),
+            title: details?.title || properties.title || `Location ${locationId}`,
+            found: isGreymane ? false : !!(window.user?.locations?.[locationId]),
             lng,
             lat,
             dist: Math.sqrt(d2),

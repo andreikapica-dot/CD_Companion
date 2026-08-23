@@ -8,7 +8,9 @@
     btn.id = 'cdWpToggle';
     btn.title = _t('waypoints.btn_title');
     btn.textContent = '⭕';
-    btn.style.cssText = `position:fixed;bottom:12px;left:12px;z-index:10000;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    btn.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
       width:36px;height:36px;border-radius:50%;
       background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);
       color:#ffd060;font:16px 'Segoe UI';cursor:pointer;
@@ -38,7 +40,9 @@
     btn.id = 'cdCenterTp';
     btn.title = _t('waypoints.center_btn_title');
     btn.textContent = '◎';
-    btn.style.cssText = `position:fixed;bottom:12px;left:56px;z-index:10000;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:344px' : 'left:56px';
+    btn.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
       width:36px;height:36px;border-radius:50%;
       background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);
       color:#80b4ff;font:18px 'Segoe UI';cursor:pointer;
@@ -66,7 +70,9 @@
     if (document.getElementById('cdCenterTpPanel')) return;
     const el = document.createElement('div');
     el.id = 'cdCenterTpPanel';
-    el.style.cssText = `position:fixed;bottom:56px;left:56px;z-index:9999;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:344px' : 'left:56px';
+    el.style.cssText = `position:fixed;bottom:56px;${position};z-index:9999;
       background:rgba(12,12,18,.92);color:#e8e8e8;
       font:12px/1.5 'Segoe UI',system-ui,sans-serif;
       border:1px solid rgba(100,160,255,.3);border-radius:7px;
@@ -336,7 +342,9 @@
     if (document.getElementById('cdWpPanel')) return;
     const el = document.createElement('div');
     el.id = 'cdWpPanel';
-    el.style.cssText = `position:fixed;bottom:56px;left:12px;z-index:9999;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    el.style.cssText = `position:fixed;bottom:56px;${position};z-index:9999;
       background:rgba(12,12,18,.92);color:#e8e8e8;
       font:13px/1.5 'Segoe UI',system-ui,sans-serif;
       border:1px solid rgba(255,208,96,.25);border-radius:7px;

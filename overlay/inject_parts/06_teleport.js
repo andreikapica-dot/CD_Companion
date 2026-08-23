@@ -1,8 +1,53 @@
   function createCenterCrosshair() {
-    if (document.getElementById('cdCenterCrosshair')) return;
-    const el = document.createElement('div');
-    el.id = 'cdCenterCrosshair';
-    document.body.appendChild(el);
+    let el = document.getElementById('cdCenterCrosshair');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cdCenterCrosshair';
+      el.innerHTML = `
+        <div id="cdCrosshairH" style="position:absolute;left:0;width:100vw;height:1px;background:rgba(255,208,96,.42);box-shadow:0 0 4px rgba(0,0,0,.55)"></div>
+        <div id="cdCrosshairV" style="position:absolute;top:0;width:1px;height:100vh;background:rgba(255,208,96,.42);box-shadow:0 0 4px rgba(0,0,0,.55)"></div>
+      `;
+      document.body.appendChild(el);
+      if (!crosshairListenersBound) {
+        crosshairListenersBound = true;
+        window.addEventListener('resize', updateCenterCrosshairViewport);
+        window.addEventListener('orientationchange', updateCenterCrosshairViewport);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', updateCenterCrosshairViewport);
+          window.visualViewport.addEventListener('scroll', updateCenterCrosshairViewport);
+        }
+      }
+    }
+    updateCenterCrosshairViewport();
+  }
+
+  function updateCenterCrosshairViewport() {
+    const el = document.getElementById('cdCenterCrosshair');
+    if (!el) return;
+    const liveMap = getMap();
+    const container = liveMap && typeof liveMap.getContainer === 'function'
+      ? liveMap.getContainer()
+      : null;
+    const rect = container && container.isConnected
+      ? container.getBoundingClientRect()
+      : null;
+    let projected = null;
+    try {
+      if (liveMap && typeof liveMap.getCenter === 'function' && typeof liveMap.project === 'function')
+        projected = liveMap.project(liveMap.getCenter());
+    } catch (_) {}
+    const cx = rect && rect.width
+      ? rect.left + (projected && Number.isFinite(projected.x) ? projected.x : rect.width / 2)
+      : window.innerWidth / 2;
+    const cy = rect && rect.height
+      ? rect.top + (projected && Number.isFinite(projected.y) ? projected.y : rect.height / 2)
+      : window.innerHeight / 2;
+    el.style.setProperty('--cd-crosshair-x', `${cx}px`);
+    el.style.setProperty('--cd-crosshair-y', `${cy}px`);
+    const horizontal = document.getElementById('cdCrosshairH');
+    const vertical = document.getElementById('cdCrosshairV');
+    if (horizontal) horizontal.style.top = `${cy}px`;
+    if (vertical) vertical.style.left = `${cx}px`;
   }
 
   function sendCmd(obj) {

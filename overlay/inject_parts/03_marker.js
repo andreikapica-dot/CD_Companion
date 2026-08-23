@@ -1,18 +1,40 @@
   function getMap() {
-    if (map) return map;
+    if (map) {
+      const container = typeof map.getContainer === 'function' ? map.getContainer() : null;
+      if (window.map === map && container && container.isConnected) return map;
+      try { if (marker) marker.remove(); } catch (_) {}
+      try { if (mapMarker) mapMarker.remove(); } catch (_) {}
+      marker = null;
+      mapMarker = null;
+      map = null;
+    }
     if (window.map && typeof window.map.easeTo === 'function') {
       map = window.map;
       createMarker();
       createMapMarker();
       adjustIconSize();
       map.on('zoom', adjustIconSize);
+      map.on('resize', updateCenterCrosshairViewport);
+      map.on('move', updateCenterCrosshairViewport);
+      map.on('resize', updatePlayerMarkerScreen);
+      map.on('move', updatePlayerMarkerScreen);
+      map.on('zoom', updatePlayerMarkerScreen);
       initLocationTooltip(map);
-      ensureBaseMapLayer(map);
-      map.on('styledata', () => ensureBaseMapLayer(map));
+      if (window.__cdMapProvider !== 'greymane') {
+        ensureBaseMapLayer(map);
+        map.on('styledata', () => ensureBaseMapLayer(map));
+      }
     }
     return map;
   }
-  const mapIv = setInterval(() => { if (getMap()) clearInterval(mapIv); }, 500);
+  // Greymane may replace the MapLibre instance after React hydration.
+  // Keep the marker attached to the current live map instead of stopping
+  // discovery after the first instance was found.
+  setInterval(() => {
+    const liveMap = getMap();
+    if (liveMap && marker && lastPos) marker.setLngLat([lastPos.lng, lastPos.lat]);
+    updateCenterCrosshairViewport();
+  }, 500);
 
   function ensureBaseMapLayer(m) {
     if (!m || !m.getStyle || !m.addSource || !m.addLayer) {
@@ -169,7 +191,7 @@
     if (marker || !map) return;
     const el = document.createElement('div');
     el.id = 'cdPlayerMarker';
-    el.style.cssText = 'position:relative;width:0;height:0;pointer-events:none;z-index:10002!important';
+    el.style.cssText = 'position:fixed;width:0;height:0;pointer-events:none;z-index:10002!important;display:none';
     el.innerHTML = `
       <svg id="cdArrow" viewBox="-12 -12 24 24" xmlns="http://www.w3.org/2000/svg"
         style="position:absolute;width:24px;height:24px;transform:translate(-50%,-50%);
@@ -186,8 +208,35 @@
       s.textContent = '@keyframes cdPulse{0%{width:16px;height:16px;opacity:.8}100%{width:38px;height:38px;opacity:0}}';
       document.head.appendChild(s);
     }
-    marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
-      .setLngLat([0, 0]).addTo(map);
-    marker.getElement().style.setProperty('z-index', '10002', 'important');
+    document.body.appendChild(el);
+    marker = {
+      getElement: () => el,
+      setLngLat: (coords) => {
+        playerLngLat = coords;
+        updatePlayerMarkerScreen();
+        return marker;
+      },
+      remove: () => el.remove(),
+    };
+    el.style.setProperty('z-index', '10002', 'important');
+  }
+
+  function updatePlayerMarkerScreen() {
+    const liveMap = map;
+    const el = marker && marker.getElement();
+    if (!liveMap || !el || !playerLngLat) return;
+    try {
+      const rect = liveMap.getContainer().getBoundingClientRect();
+      const point = liveMap.project(playerLngLat);
+      const x = rect.left + point.x;
+      const y = rect.top + point.y;
+      const visible = point.x >= 0 && point.y >= 0 &&
+        point.x <= rect.width && point.y <= rect.height;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.display = visible ? 'block' : 'none';
+    } catch (_) {
+      el.style.display = 'none';
+    }
   }
 

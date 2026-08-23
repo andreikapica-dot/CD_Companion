@@ -598,8 +598,11 @@ def _hotkey_thread():
                 key_state.clear()
                 log.info("Hotkeys reloaded")
 
-        if not _engine or not _engine.attached or not _engine.hooks_installed:
-            continue
+        # UI-only hotkeys (Nearby/Waypoints) must keep working even while the
+        # game is loading or the memory hook is temporarily unavailable.
+        engine_ready = bool(
+            _engine and _engine.attached and _engine.hooks_installed
+        )
 
         nearby_enabled = _nearby_controls_enabled()
         controller_buttons = _controller_buttons(get_xinput_state)
@@ -698,11 +701,13 @@ def _hotkey_thread():
             if pressed and not was_pressed:
                 if _hotkey_loop:
                     if hk_id == "teleport_marker":
-                        _hotkey_loop.call_soon_threadsafe(
-                            asyncio.ensure_future, _hotkey_teleport_marker())
+                        if engine_ready:
+                            _hotkey_loop.call_soon_threadsafe(
+                                asyncio.ensure_future, _hotkey_teleport_marker())
                     elif hk_id == "abort":
-                        _hotkey_loop.call_soon_threadsafe(
-                            asyncio.ensure_future, _hotkey_abort())
+                        if engine_ready:
+                            _hotkey_loop.call_soon_threadsafe(
+                                asyncio.ensure_future, _hotkey_abort())
                     elif hk_id == "open_nearby":
                         _hotkey_loop.call_soon_threadsafe(
                             asyncio.ensure_future, _hotkey_open_nearby())

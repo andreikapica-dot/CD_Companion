@@ -51,6 +51,7 @@ CONFIG_FILE = os.path.join(_APP_DIR, 'overlay_config.json')
 # log path must exist before that import (not only later inside main()).
 os.environ.setdefault('CD_LOG_FILE', os.path.join(_APP_DIR, 'cd_server.log'))
 DEFAULT_URL = 'https://mapgenie.io/crimson-desert/maps/pywel'
+GREYMANE_URL = 'https://crimsondesert.co/ru/map'
 DEFAULT_W   = 520
 DEFAULT_H   = 420
 WS_URL      = 'ws://localhost:7891'
@@ -159,6 +160,19 @@ def _load_inject_js():
     return _Template(raw).safe_substitute(WS_URL=WS_URL)
 
 INJECT_JS = _load_inject_js()
+
+
+def _load_greymane_adapter_js():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'greymane_adapter.js')
+    try:
+        with open(path, 'r', encoding='utf-8') as source:
+            return source.read()
+    except OSError:
+        return ''
+
+
+GREYMANE_ADAPTER_JS = _load_greymane_adapter_js()
 
 # ── Widgets extraídos para overlay_widgets.py ────────────────────────
 from overlay.widgets import (
@@ -1089,6 +1103,66 @@ def _show_mode_selector(current_mode):
     return chosen[0]
 
 
+def _show_map_selector(current_provider):
+    """Choose which interactive map is hosted by Full mode."""
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+        app.setApplicationName('CD Map Overlay')
+
+    chosen = [None]
+    dlg = QDialog()
+    dlg.setWindowTitle('CD Companion — Full map')
+    dlg.setWindowFlags(Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint)
+    dlg.setFixedSize(430, 180)
+    dlg.setStyleSheet(
+        'QDialog{background:#0f0f1a;}'
+        'QLabel{color:#e8e8e8;}'
+        'QPushButton{min-height:50px;border-radius:7px;font:bold 13px "Segoe UI";}'
+    )
+
+    layout = QVBoxLayout(dlg)
+    layout.setSpacing(14)
+    layout.setContentsMargins(24, 20, 24, 20)
+    title = QLabel('Choose map for Full mode')
+    title.setStyleSheet('font:bold 15px "Segoe UI";color:#ffd060;')
+    title.setAlignment(Qt.AlignCenter)
+    layout.addWidget(title)
+
+    desc = QLabel('MapGenie — original map   •   Greymane Codex — crimsondesert.co')
+    desc.setStyleSheet('font:11px "Segoe UI";color:#94a3b8;')
+    desc.setAlignment(Qt.AlignCenter)
+    layout.addWidget(desc)
+
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    mapgenie = QPushButton('MapGenie')
+    greymane = QPushButton('Greymane Codex')
+    mapgenie.setStyleSheet(
+        'QPushButton{background:rgba(96,184,255,.15);border:1.5px solid rgba(96,184,255,.5);color:#60b8ff;}'
+        'QPushButton:hover{background:rgba(96,184,255,.3);}')
+    greymane.setStyleSheet(
+        'QPushButton{background:rgba(255,208,96,.12);border:1.5px solid rgba(255,208,96,.45);color:#ffd060;}'
+        'QPushButton:hover{background:rgba(255,208,96,.25);}')
+    mapgenie.clicked.connect(lambda: (chosen.__setitem__(0, 'mapgenie'), dlg.accept()))
+    greymane.clicked.connect(lambda: (chosen.__setitem__(0, 'greymane'), dlg.accept()))
+    row.addWidget(mapgenie)
+    row.addWidget(greymane)
+    layout.addLayout(row)
+
+    if current_provider == 'greymane':
+        greymane.setDefault(True)
+        greymane.setFocus()
+    else:
+        mapgenie.setDefault(True)
+        mapgenie.setFocus()
+
+    dlg.exec_()
+    dlg.deleteLater()
+    app.processEvents()
+    return chosen[0]
+
+
 def main():
     # ── Log file (sem console, logs vão para arquivo) ─────────────────
     # Definido ANTES de importar server.main, pois o logging é configurado
@@ -1140,6 +1214,13 @@ def main():
     # Chromium bundled with PyQt5.  Full mode uses the installed Microsoft Edge
     # WebView2 runtime instead, while preserving the existing server and JS UI.
     if overlay_mode == 'full':
+        map_provider = _show_map_selector(cfg.get('mapProvider', 'mapgenie'))
+        if map_provider is None:
+            return
+        if map_provider != cfg.get('mapProvider'):
+            cfg['mapProvider'] = map_provider
+            save_config(cfg)
+
         from overlay.webview2_full import run as _run_webview2_full
         webview2_settings = {
             key: cfg.get(key, default) for key, default in SETTING_DEFAULTS.items()
@@ -1148,16 +1229,20 @@ def main():
         # its global hotkey available even when the legacy Qt setting was off.
         os.environ['CD_NEARBY_CONTROLS_ENABLED'] = '1'
         webview2_settings['nearbyControlsEnabled'] = True
+        webview2_settings['teleportEnabled'] = True
         webview2_settings['i18n'] = (
             i18n._instance.get_dict() if i18n._instance else {}
         )
         _run_webview2_full(
             cfg,
-            cfg.get('url', DEFAULT_URL),
+            GREYMANE_URL if map_provider == 'greymane'
+            else cfg.get('url', DEFAULT_URL),
             INJECT_JS,
             _start_server_thread,
             app_dir,
             webview2_settings,
+            map_provider=map_provider,
+            greymane_adapter_js=GREYMANE_ADAPTER_JS,
         )
         return
 

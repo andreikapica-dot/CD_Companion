@@ -15,6 +15,7 @@
 
   let ws              = null;
   let marker          = null;
+  let playerLngLat    = null;
   let mapMarker       = null;
   let mapDestLng      = null;
   let mapDestLat      = null;
@@ -32,6 +33,7 @@
   let nearbyPopup     = null;
   let nearbyInputHandler = null;
   let nearbySelectionActive = false;
+  let crosshairListenersBound = false;
   let waypointFilter  = '';
   let hasPreTeleport  = false;
   let teleportEnabled = !(window.__cdSettings && window.__cdSettings.teleportEnabled === false);

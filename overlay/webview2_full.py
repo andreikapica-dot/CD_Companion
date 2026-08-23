@@ -9,8 +9,9 @@ import sys
 import time
 
 
-def run(cfg, url, inject_js, start_server_thread, app_dir, settings):
-    """Run MapGenie in WebView2 while the existing game server runs in-process."""
+def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
+        map_provider='mapgenie', greymane_adapter_js=''):
+    """Run the selected interactive map while the game server is isolated."""
     import webview
 
     # Qt's event stack can block asyncio's Windows socket initialization when
@@ -79,8 +80,10 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings):
                 'window.__cdSettings = ' + json.dumps(settings) + ';'
                 'window.__cdNativeRealtimeEnabled = false;'
                 'window.__cdWebView2 = true;'
+                'window.__cdMapProvider = ' + json.dumps(map_provider) + ';'
             )
-            window.evaluate_js(prelude + inject_js)
+            adapter = greymane_adapter_js if map_provider == 'greymane' else ''
+            window.evaluate_js(prelude + adapter + inject_js)
         except Exception as exc:
             print(f'[!] WebView2 overlay injection failed: {exc}')
 

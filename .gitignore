@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.log
+build*/
+dist*/
+*.spec.bak
+.venv/
+venv/
+overlay_config.json
+cd_hotkeys.json
+cd_hook_offsets.json
+cd_overlay_waypoints.json

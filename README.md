@@ -1,13 +1,21 @@
-# Crimson Desert — Map Companion
+# Crimson Desert — CD Companion
 
-A real-time overlay for the [MapGenie](https://mapgenie.io/crimson-desert) interactive map
-that reads the player's live position from `CrimsonDesert.exe` process memory and displays
-a marker on the map as you move.
+A real-time map companion for Crimson Desert. It reads the player's live position from
+`CrimsonDesert.exe`, displays it on an interactive map, and provides teleport, waypoints,
+nearby locations, global hotkeys, and Full/Server Only modes.
+
+Supported map websites:
+
+- [MapGenie](https://mapgenie.io/crimson-desert)
+- [Greymane Codex](https://crimsondesert.co/map)
 
 ### Chrome Extension
 
-Use the map on a second monitor or separate window without the overlay.
-Download from the [cd-companion-chrome](https://github.com/leandrodiogenes/cd-companion-chrome/releases/latest) releases page.
+Use either supported map in Chrome, Edge, Opera, Vivaldi, or another Chromium-based browser.
+The current unpacked extension source is included in [`browser-extension/`](browser-extension/).
+
+To install it, open the browser extensions page, enable **Developer mode**, choose
+**Load unpacked**, and select the `browser-extension` folder.
 
 ### Android App
 

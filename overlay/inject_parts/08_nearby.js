@@ -195,6 +195,8 @@
   }
 
   function nearbyControlsEnabled() {
+    if (window.__cdSettings && window.__cdSettings.nearbyControlsEnabled === true)
+      return true;
     try {
       const saved = localStorage.getItem('cd-nearby-enabled');
       if (saved === '0') return false;
@@ -212,7 +214,27 @@
     return enabled;
   }
 
+  function ensureNearbyToggleBtn() {
+    if (document.getElementById('cdNearbyToggle')) return;
+    const button = document.createElement('button');
+    button.id = 'cdNearbyToggle';
+    button.title = 'Nearby locations (Shift+N)';
+    button.textContent = '📍';
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:388px' : 'left:100px';
+    button.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
+      width:36px;height:36px;border-radius:50%;display:flex;align-items:center;
+      justify-content:center;background:rgba(12,12,18,.9);
+      border:1px solid rgba(255,96,150,.45);color:#ff6096;font:16px 'Segoe UI';
+      cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px)`;
+    button.addEventListener('click', openNearbyPopup);
+    document.body.appendChild(button);
+    button.style.display = nearbyControlsEnabled() ? 'flex' : 'none';
+  }
+
   window.__cdUpdateNearbyControls = function() {
+    const toggle = document.getElementById('cdNearbyToggle');
+    if (toggle) toggle.style.display = nearbyControlsEnabled() ? 'flex' : 'none';
     updateNearbyCircle();
     if (nearbyControlsEnabled()) return;
     const popup = nearbyPopup;
@@ -244,22 +266,35 @@
   function getNearbyLocations() {
     if (!lastPos || !map) return [];
     try {
-      const features = map.getStyle().sources['locations-data']?.data?.features;
+      const isGreymane = window.__cdMapProvider === 'greymane';
+      const sourceId = isGreymane ? 'markers-source' : 'locations-data';
+      const source = map.getSource?.(sourceId);
+      const styleSource = map.getStyle?.().sources?.[sourceId];
+      let features = source?._data?.features || styleSource?.data?.features;
+      if (!features && typeof map.querySourceFeatures === 'function') {
+        features = map.querySourceFeatures(sourceId);
+      }
       if (!features) return [];
       const t = _nearbyThreshold();
       return features
         .reduce((acc, f) => {
-          const categoryId = f.properties.category_id;
-          if (!_isMapGenieCategoryVisible(categoryId)) return acc;
+          const properties = f.properties || {};
+          const categoryId = isGreymane
+            ? properties.categoryId
+            : properties.category_id;
+          if (!isGreymane && !_isMapGenieCategoryVisible(categoryId)) return acc;
           const [lng, lat] = f.geometry.coordinates;
           const dx = lng - lastPos.lng, dy = lat - lastPos.lat;
           const d2 = dx * dx + dy * dy;
-          const details = _getLocationDetails(f.properties.locationId);
-          const category = details?.category || _getCategoryName(categoryId);
+          const locationId = isGreymane ? properties.id : properties.locationId;
+          const details = isGreymane ? null : _getLocationDetails(locationId);
+          const category = isGreymane
+            ? (properties.categoryName || '')
+            : (details?.category || _getCategoryName(categoryId));
           if (d2 <= t * t) acc.push({
-            id: String(f.properties.locationId),
-            title: details?.title || f.properties.title || `Location ${f.properties.locationId}`,
-            found: !!(window.user?.locations?.[f.properties.locationId]),
+            id: String(locationId),
+            title: details?.title || properties.title || `Location ${locationId}`,
+            found: isGreymane ? false : !!(window.user?.locations?.[locationId]),
             lng,
             lat,
             dist: Math.sqrt(d2),
@@ -295,7 +330,9 @@
 
     panel = document.createElement('div');
     panel.id = 'cdNearbyPanel';
-    panel.style.cssText = `position:fixed;bottom:56px;left:12px;z-index:10001;
+    const panelPosition = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    panel.style.cssText = `position:fixed;bottom:56px;${panelPosition};z-index:10001;
       width:300px;max-height:480px;display:flex;flex-direction:column;gap:8px;
       padding:10px 12px;background:rgba(12,12,18,.94);color:#e8e8e8;
       border:1px solid rgba(255,208,96,.3);border-radius:7px;

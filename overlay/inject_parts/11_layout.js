@@ -80,14 +80,18 @@
       // Restaura waypoints button para body com estilo original
       if (wpBtn.parentNode === bar) document.body.appendChild(wpBtn);
       if (tpBtn.parentNode === bar) document.body.appendChild(tpBtn);
-      wpBtn.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:10000;' +
+      const wpPosition = window.__cdMapProvider === 'greymane'
+        ? 'left:300px;' : 'left:12px;';
+      const tpPosition = window.__cdMapProvider === 'greymane'
+        ? 'left:344px;' : 'left:56px;';
+      wpBtn.style.cssText = 'position:fixed;bottom:12px;' + wpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);' +
         'color:#ffd060;font:16px "Segoe UI";cursor:pointer;' +
         'box-shadow:0 3px 12px rgba(0,0,0,.5);' +
         'display:flex;align-items:center;justify-content:center;' +
         'backdrop-filter:blur(4px);transition:border-color .15s,background .15s';
-      tpBtn.style.cssText = 'position:fixed;bottom:12px;left:56px;z-index:10000;' +
+      tpBtn.style.cssText = 'position:fixed;bottom:12px;' + tpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);' +
         'color:#80b4ff;font:18px "Segoe UI";cursor:pointer;' +
@@ -253,7 +257,7 @@
       .mapboxgl-ctrl-bottom-right, #map-type-control { display: none !important; }
       #cdCenterCrosshair {
         position:fixed;inset:0;width:100vw;height:100vh;
-        pointer-events:none;z-index:1;
+        pointer-events:none;z-index:9990 !important;
       }
       #cdCenterCrosshair::before,
       #cdCenterCrosshair::after {
@@ -262,13 +266,15 @@
         box-shadow:0 0 4px rgba(0,0,0,.55);
       }
       #cdCenterCrosshair::before {
-        top:50%;left:0;width:100%;height:1px;
+        top:var(--cd-crosshair-y, 50vh);left:0;width:100%;height:1px;
         transform:translateY(-50%);
       }
       #cdCenterCrosshair::after {
-        top:0;left:50%;width:1px;height:100%;
+        top:0;left:var(--cd-crosshair-x, 50vw);width:1px;height:100%;
         transform:translateX(-50%);
       }
+      #cdCenterCrosshair::before,
+      #cdCenterCrosshair::after { display:none; }
     `;
     document.head.appendChild(s);
   })();
