@@ -67,7 +67,10 @@ def _run_server_child():
             kernel32.CloseHandle.restype = wintypes.BOOL
             handle = kernel32.OpenProcess(0x00100000, False, parent_pid)
             if not handle:
-                os._exit(0)
+                # Parent monitoring is a cleanup safeguard, not a prerequisite
+                # for running the server. Normal window closure still performs
+                # an explicit terminate+wait in webview2_full.py.
+                return
             kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
             kernel32.CloseHandle(handle)
             os._exit(0)

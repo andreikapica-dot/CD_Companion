@@ -241,14 +241,23 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
     # Do not silently open a disconnected UI if the in-process server failed.
     server_online = False
     server_error = ''
-    for _ in range(20):
+    # A frozen child now unpacks into its own temporary directory so it cannot
+    # lock the GUI's _MEI folder. On slower disks/antivirus scans the 120 MB
+    # one-file executable can need considerably longer than the old 7-second
+    # window before Python imports reach the WebSocket bind.
+    server_deadline = time.monotonic() + 60.0
+    while time.monotonic() < server_deadline:
+        exit_code = server_process.poll()
+        if exit_code is not None:
+            server_error = f'server child exited with code {exit_code}'
+            break
         try:
             with socket.create_connection(('127.0.0.1', 7891), timeout=0.25):
                 server_online = True
                 break
         except OSError as exc:
             server_error = str(exc)
-            time.sleep(0.1)
+            time.sleep(0.15)
 
     diagnostic_path = os.path.join(app_dir, 'cd_webview2.log')
     try:
