@@ -41,6 +41,41 @@ if not _is_admin():
 
 def _run_server_child():
     """Internal Full-mode server process, isolated from Qt/WebView2."""
+    parent_pid = None
+    for arg in sys.argv:
+        if arg.startswith('--parent-pid='):
+            try:
+                parent_pid = int(arg.split('=', 1)[1])
+            except ValueError:
+                parent_pid = None
+            break
+
+    if parent_pid:
+        def _exit_with_parent():
+            # SYNCHRONIZE access is enough to wait for the GUI process. This
+            # also covers Task Manager / forced-close paths where pywebview's
+            # normal closed event cannot run.
+            kernel32 = ctypes.windll.kernel32
+            from ctypes import wintypes
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.WaitForSingleObject.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD]
+            kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(0x00100000, False, parent_pid)
+            if not handle:
+                os._exit(0)
+            kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+            kernel32.CloseHandle(handle)
+            os._exit(0)
+
+        import threading
+        threading.Thread(target=_exit_with_parent, daemon=True,
+                         name='cd-parent-watch').start()
+
     app_dir = os.path.dirname(sys.executable) if _FROZEN else SCRIPT_DIR
     os.environ['CD_APP_DIR'] = app_dir
     os.environ.setdefault('CD_LOG_FILE', os.path.join(app_dir, 'cd_server.log'))

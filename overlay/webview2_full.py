@@ -225,9 +225,16 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
 
     # Qt's event stack can block asyncio's Windows socket initialization when
     # both live in one process. Keep the game server in a small child process.
+    child_env = os.environ.copy()
+    # A frozen child must unpack independently. Reusing the parent's _MEI
+    # directory keeps DLLs locked and makes PyInstaller show a cleanup warning
+    # after a forced window close.
+    child_env.pop('_PYI_APPLICATION_HOME_DIR', None)
+    child_env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
     server_process = subprocess.Popen(
-        [sys.executable, '--server-child'],
+        [sys.executable, '--server-child', f'--parent-pid={os.getpid()}'],
         cwd=app_dir,
+        env=child_env,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
     )
 
@@ -275,7 +282,6 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
     window = webview.create_window(
         'CD Companion — Full',
         url=url,
-        js_api=native_api,
         width=width,
         height=height,
         x=int(x) if isinstance(x, (int, float)) else None,
@@ -285,6 +291,18 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
         background_color='#000000',
     )
     native_api.bind(window)
+
+    # Do not pass the native bridge object as js_api. PyWebView recursively
+    # scans every public attribute on such an object; ctypes WinDLL attributes
+    # make that scan effectively unbounded and freeze the loading thread.
+    # Expose only the two operations that the page is allowed to call.
+    def set_round_window(enabled):
+        return native_api.set_round_window(enabled)
+
+    def drag_window():
+        return native_api.drag_window()
+
+    window.expose(set_round_window, drag_window)
     window.events.shown += native_api.apply_initial_shape
     window.events.closing += native_api.save_geometry
 
@@ -309,8 +327,12 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
         if server_process.poll() is None:
             try:
                 server_process.terminate()
+                server_process.wait(timeout=5)
             except OSError:
                 pass
+            except subprocess.TimeoutExpired:
+                server_process.kill()
+                server_process.wait(timeout=2)
 
     window.events.closed += stop_server
 

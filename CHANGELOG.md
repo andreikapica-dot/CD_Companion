@@ -8,6 +8,8 @@
 - Full-mode calibration controls for adding a map point or resetting the active realm calibration.
 
 ### Fixed
+- Fixed a WebView2 startup freeze caused by recursively exposing Win32 bridge internals to JavaScript.
+- The isolated Full-mode server now exits with its parent and no longer keeps PyInstaller's temporary directory locked.
 - Prevented Full mode from becoming unresponsive while MapGenie renders thousands of visible markers.
 - Full mode now restores the crosshair, Waypoints button, Nearby button, and center teleport control when the Greymane page removes them during hydration.
 - Player marker remains visible after the Greymane map instance is replaced.
