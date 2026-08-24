@@ -8,6 +8,7 @@
 - Full-mode calibration controls for adding a map point or resetting the active realm calibration.
 
 ### Fixed
+- Prevented Full mode from becoming unresponsive while MapGenie renders thousands of visible markers.
 - Full mode now restores the crosshair, Waypoints button, Nearby button, and center teleport control when the Greymane page removes them during hydration.
 - Player marker remains visible after the Greymane map instance is replaced.
 - Crosshair alignment now uses the active map viewport and its sidebar padding.
