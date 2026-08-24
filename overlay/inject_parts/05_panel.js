@@ -8,7 +8,21 @@
   }
 
   function ensureStatusToggleBtn() {
-    if (document.getElementById('cdOvBar')) return;
+    const existingBar = document.getElementById('cdOvBar');
+    if (existingBar) {
+      const complete = document.getElementById('cdOvSettingsBtn') &&
+        document.getElementById('cdOvExpandBtn') &&
+        document.getElementById('cdOvFollowFloat');
+      if (complete) return;
+      // A map SPA refresh can remove individual injected children while
+      // leaving the bar itself alive. Rebuild that incomplete bar instead of
+      // waiting for a full page reload.
+      ['cdWpToggle', 'cdCenterTp'].forEach((id) => {
+        const control = document.getElementById(id);
+        if (control && control.parentNode === existingBar) document.body.appendChild(control);
+      });
+      existingBar.remove();
+    }
     const bar = document.createElement('div');
     bar.id = 'cdOvBar';
     bar.style.cssText = `position:fixed;bottom:12px;right:12px;z-index:10000;
@@ -130,8 +144,32 @@
       window.__cdSettings.roundWindow = !!result.roundWindow;
       if (checkbox) checkbox.checked = !!result.roundWindow;
       applyRoundLayout(!!result.roundWindow);
+      let settingsPanel = document.getElementById('cdHotkeySettings');
+      if (result.roundWindow) {
+        window.__cdSettingsWasOpenBeforeCompact = !!(
+          settingsPanel && settingsPanel.style.display !== 'none');
+        if (settingsPanel) {
+          settingsPanel.style.display = 'none';
+        }
+        sendCmd({ cmd: 'hotkey_editing', active: false });
+      } else {
+        // A SPA navigation can delete the injected settings panel while the
+        // compact map is active. Recreate it before restoring its visibility.
+        ensureStatusToggleBtn();
+        settingsPanel = ensureHotkeySettings();
+        const restoreOpen = window.__cdSettingsWasOpenBeforeCompact !== false;
+        settingsPanel.style.display = restoreOpen ? 'block' : 'none';
+        delete window.__cdSettingsWasOpenBeforeCompact;
+        sendCmd({ cmd: 'hotkey_editing', active: restoreOpen });
+        // React can perform another body replacement shortly after the native
+        // window returns to Full. Recheck after each common hydration delay.
+        [0, 250, 900, 2000].forEach((delay) => setTimeout(() => {
+          if (window.__cdRepairCompanionControls)
+            window.__cdRepairCompanionControls(true);
+        }, delay));
+      }
       _setFullSettingsStatus(result.roundWindow
-        ? 'Circular minimap enabled. Drag it using the handle at the top.'
+        ? 'Compact map enabled. Drag MOVE to reposition; resize from any edge; double-click MOVE to restore Full.'
         : 'Full window restored.');
     } catch (error) {
       if (checkbox) checkbox.checked = !enabled;
@@ -177,7 +215,7 @@
       font:12px/1.4 'Segoe UI',system-ui,sans-serif;display:none`;
     panel.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="color:#ffd060;flex:1">⚙ Settings</b><button id="cdHkClose" style="border:0;background:transparent;color:#bbb;font:18px Segoe UI;cursor:pointer">×</button></div>
       <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdNearbyEnabled" type="checkbox"> Nearby — show radius and list</label>
-      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Circular minimap window</label>
+      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Compact resizable map window</label>
       <div style="display:flex;gap:6px;margin:0 0 8px">
         <button id="cdCalibrateMarker" style="flex:1;background:#20202b;color:#ffd060;border:1px solid rgba(255,208,96,.35);border-radius:4px;padding:6px;cursor:pointer">Calibrate marker</button>
         <button id="cdResetCalibration" style="background:#20202b;color:#ddd;border:1px solid #444;border-radius:4px;padding:6px;cursor:pointer">Reset</button>

@@ -173,7 +173,7 @@ Accessible via the `⚙` button in the bar (hover at the top of the window):
 | Hide Found Locations | ✅ | Automatically disables "Found Locations" |
 | Hide Left Panel | ☐ | Closes the left sidebar on load |
 | Hide Right Panel | ☐ | Closes the right sidebar on load |
-| Circular/oval window | ☐ | Turns WebView2 Full mode into a movable circular minimap and remembers both window layouts |
+| Compact resizable window | ☐ | Turns WebView2 Full mode into a movable map-only window; resize it from any edge and double-click MOVE to restore Full |
 | Follow game window | ☐ | Moves the overlay along with the game window |
 | Transparency | 0% | Window opacity (0% to 90%) |
 | Direction arrow | Auto | `Auto` / `Entity vector` / `Position delta` |

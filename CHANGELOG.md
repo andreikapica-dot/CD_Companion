@@ -8,6 +8,13 @@
 - Full-mode calibration controls for adding a map point or resetting the active realm calibration.
 
 ### Fixed
+- Circular mode now presents a clean map-only minimap, closes the settings panel automatically, and uses PyWebView's reliable drag region.
+- Leaving circular mode now restores the settings panel to the state it had before the minimap was enabled.
+- Circular mode now clips transparent corners instead of leaving a square background and provides a larger visible native drag handle.
+- Circular dragging now follows the held left mouse button directly, and the host applies a native transparency key behind the clipped map.
+- Full-mode controls now restore independently after repeated circular-mode transitions, even if the map page temporarily removes a Waypoints or teleport button.
+- Transparency is now enabled before the circular frame and region are applied, preventing WinForms from recreating a square titled window afterward.
+- Circular mode now also applies a managed WinForms region so WebView2 composition cannot render beyond the circular host boundary.
 - Fixed a WebView2 startup freeze caused by recursively exposing Win32 bridge internals to JavaScript.
 - The isolated Full-mode server now exits with its parent and no longer keeps PyInstaller's temporary directory locked.
 - Full mode now allows up to 60 seconds for the independently unpacked server child to start and reports an early child exit separately.
@@ -182,3 +189,6 @@
 ### Improved
 - Nearby popup list no longer resets scroll on each refresh; skips render entirely when nothing changed.
 - Nearby popup refresh is lighter while open: location details are cached, the details panel only re-renders when selection/found state changes, and the radius circle skips unchanged updates.
+- Replaced the unreliable circular WebView2 mask with a compact, resizable map window.
+- Compact mode keeps an interactive MOVE handle, supports edge/corner resizing, and restores Full mode on double-click.
+- Returning from compact mode now recreates and restores the settings panel even after a map SPA refresh.

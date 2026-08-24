@@ -473,7 +473,21 @@
   }
 
   function ensureStatusToggleBtn() {
-    if (document.getElementById('cdOvBar')) return;
+    const existingBar = document.getElementById('cdOvBar');
+    if (existingBar) {
+      const complete = document.getElementById('cdOvSettingsBtn') &&
+        document.getElementById('cdOvExpandBtn') &&
+        document.getElementById('cdOvFollowFloat');
+      if (complete) return;
+      // A map SPA refresh can remove individual injected children while
+      // leaving the bar itself alive. Rebuild that incomplete bar instead of
+      // waiting for a full page reload.
+      ['cdWpToggle', 'cdCenterTp'].forEach((id) => {
+        const control = document.getElementById(id);
+        if (control && control.parentNode === existingBar) document.body.appendChild(control);
+      });
+      existingBar.remove();
+    }
     const bar = document.createElement('div');
     bar.id = 'cdOvBar';
     bar.style.cssText = `position:fixed;bottom:12px;right:12px;z-index:10000;
@@ -595,8 +609,32 @@
       window.__cdSettings.roundWindow = !!result.roundWindow;
       if (checkbox) checkbox.checked = !!result.roundWindow;
       applyRoundLayout(!!result.roundWindow);
+      let settingsPanel = document.getElementById('cdHotkeySettings');
+      if (result.roundWindow) {
+        window.__cdSettingsWasOpenBeforeCompact = !!(
+          settingsPanel && settingsPanel.style.display !== 'none');
+        if (settingsPanel) {
+          settingsPanel.style.display = 'none';
+        }
+        sendCmd({ cmd: 'hotkey_editing', active: false });
+      } else {
+        // A SPA navigation can delete the injected settings panel while the
+        // compact map is active. Recreate it before restoring its visibility.
+        ensureStatusToggleBtn();
+        settingsPanel = ensureHotkeySettings();
+        const restoreOpen = window.__cdSettingsWasOpenBeforeCompact !== false;
+        settingsPanel.style.display = restoreOpen ? 'block' : 'none';
+        delete window.__cdSettingsWasOpenBeforeCompact;
+        sendCmd({ cmd: 'hotkey_editing', active: restoreOpen });
+        // React can perform another body replacement shortly after the native
+        // window returns to Full. Recheck after each common hydration delay.
+        [0, 250, 900, 2000].forEach((delay) => setTimeout(() => {
+          if (window.__cdRepairCompanionControls)
+            window.__cdRepairCompanionControls(true);
+        }, delay));
+      }
       _setFullSettingsStatus(result.roundWindow
-        ? 'Circular minimap enabled. Drag it using the handle at the top.'
+        ? 'Compact map enabled. Drag MOVE to reposition; resize from any edge; double-click MOVE to restore Full.'
         : 'Full window restored.');
     } catch (error) {
       if (checkbox) checkbox.checked = !enabled;
@@ -642,7 +680,7 @@
       font:12px/1.4 'Segoe UI',system-ui,sans-serif;display:none`;
     panel.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="color:#ffd060;flex:1">⚙ Settings</b><button id="cdHkClose" style="border:0;background:transparent;color:#bbb;font:18px Segoe UI;cursor:pointer">×</button></div>
       <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdNearbyEnabled" type="checkbox"> Nearby — show radius and list</label>
-      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Circular minimap window</label>
+      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Compact resizable map window</label>
       <div style="display:flex;gap:6px;margin:0 0 8px">
         <button id="cdCalibrateMarker" style="flex:1;background:#20202b;color:#ffd060;border:1px solid rgba(255,208,96,.35);border-radius:4px;padding:6px;cursor:pointer">Calibrate marker</button>
         <button id="cdResetCalibration" style="background:#20202b;color:#ddd;border:1px solid #444;border-radius:4px;padding:6px;cursor:pointer">Reset</button>
@@ -2751,54 +2789,162 @@
     if (handle) return handle;
     handle = document.createElement('button');
     handle.id = 'cdRoundDragHandle';
+    // Do not use pywebview-drag-region here. PyWebView consumes its mouse
+    // events before our bridge can start dragging or handle a double-click.
+    handle.className = '';
     handle.type = 'button';
-    handle.title = 'Drag circular window';
-    handle.textContent = '✥';
-    handle.style.cssText = 'position:fixed;top:9px;left:50%;transform:translateX(-50%);' +
-      'z-index:10005;width:38px;height:24px;display:none;align-items:center;justify-content:center;' +
-      'border-radius:12px;border:1px solid rgba(255,208,96,.4);background:rgba(12,12,18,.72);' +
-      'color:#ffd060;font:15px Segoe UI;cursor:move;opacity:.48;transition:opacity .15s';
-    handle.addEventListener('mouseenter', () => { handle.style.opacity = '1'; });
-    handle.addEventListener('mouseleave', () => { handle.style.opacity = '.48'; });
+    handle.title = 'Drag compact map — double-click to restore Full mode';
+    handle.textContent = '⋮⋮  MOVE';
+    handle.style.cssText = 'position:fixed;top:7px;left:50%;transform:translateX(-50%);' +
+      'z-index:10005;width:92px;height:28px;display:none;align-items:center;justify-content:center;' +
+      'border-radius:14px;border:1px solid rgba(255,208,96,.42);' +
+      'background:rgba(12,12,18,.72);color:#ffd060;' +
+      'font:bold 10px Segoe UI;letter-spacing:.8px;cursor:move;opacity:.42;' +
+      'transition:opacity .15s,background .15s';
+    handle.addEventListener('mouseenter', () => { handle.style.opacity = '.96'; });
+    handle.addEventListener('mouseleave', () => { handle.style.opacity = '.42'; });
     handle.addEventListener('mousedown', (event) => {
       if (event.button !== 0) return;
-      event.preventDefault();
+      // Let the second click reach the dblclick handler used to restore Full.
+      if (event.detail > 1) return;
       if (window.pywebview && window.pywebview.api &&
           typeof window.pywebview.api.drag_window === 'function') {
+        event.preventDefault();
+        event.stopPropagation();
         window.pywebview.api.drag_window();
       }
+    });
+    handle.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setNativeRoundWindow(false);
     });
     document.body.appendChild(handle);
     return handle;
   }
 
+  function ensureRoundMinimapStyle() {
+    if (document.getElementById('cdRoundMinimapStyle')) return;
+    const style = document.createElement('style');
+    style.id = 'cdRoundMinimapStyle';
+    style.textContent = `
+      html.cd-round-minimap {
+        margin:0 !important; padding:0 !important; width:100% !important;
+        height:100% !important; overflow:hidden !important;
+        background:#11131b !important;
+      }
+      html.cd-round-minimap body {
+        margin:0 !important; padding:0 !important; width:100% !important;
+        height:100% !important; overflow:hidden !important;
+        background:#11131b !important; border-radius:0 !important;
+        clip-path:none !important;
+      }
+      html.cd-round-minimap body > header,
+      html.cd-round-minimap body > nav,
+      html.cd-round-minimap body header,
+      html.cd-round-minimap body nav,
+      html.cd-round-minimap body aside,
+      html.cd-round-minimap .navbar,
+      html.cd-round-minimap #left-sidebar,
+      html.cd-round-minimap #right-sidebar,
+      html.cd-round-minimap .mapboxgl-control-container,
+      html.cd-round-minimap .maplibregl-control-container,
+      html.cd-round-minimap iframe,
+      html.cd-round-minimap #cdOvBar,
+      html.cd-round-minimap #cdHotkeySettings,
+      html.cd-round-minimap #cdOvPanel,
+      html.cd-round-minimap #cdWpPanel,
+      html.cd-round-minimap #cdNearbyPanel,
+      html.cd-round-minimap #cdWpToggle,
+      html.cd-round-minimap #cdNearbyToggle,
+      html.cd-round-minimap #cdCenterTp,
+      html.cd-round-minimap #cdCenterTpPanel,
+      html.cd-round-minimap #cdCenterCrosshair {
+        display:none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function applyRoundMapViewport(isRound) {
+    ensureRoundMinimapStyle();
+    document.documentElement.classList.toggle('cd-round-minimap', !!isRound);
+
+    const applyToMap = () => {
+      const map = getMap();
+      if (!map || typeof map.getContainer !== 'function') return false;
+      const container = map.getContainer();
+      if (!container) return false;
+      if (isRound) {
+        if (!container.dataset.cdRoundOriginalStyle)
+          container.dataset.cdRoundOriginalStyle = container.getAttribute('style') || ' ';
+        container.style.setProperty('position', 'fixed', 'important');
+        container.style.setProperty('inset', '0', 'important');
+        container.style.setProperty('width', '100vw', 'important');
+        container.style.setProperty('height', '100vh', 'important');
+        container.style.setProperty('z-index', '1', 'important');
+        container.style.setProperty('border-radius', '0', 'important');
+        container.style.setProperty('clip-path', 'none', 'important');
+        container.style.setProperty('overflow', 'hidden', 'important');
+      } else if (container.dataset.cdRoundOriginalStyle !== undefined) {
+        const original = container.dataset.cdRoundOriginalStyle;
+        if (original.trim()) container.setAttribute('style', original);
+        else container.removeAttribute('style');
+        delete container.dataset.cdRoundOriginalStyle;
+      }
+      setTimeout(() => {
+        try { if (typeof map.resize === 'function') map.resize(); } catch (_) {}
+      }, 60);
+      return true;
+    };
+
+    if (applyToMap()) return;
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (applyToMap() || attempts >= 40) clearInterval(timer);
+    }, 250);
+  }
+
   function applyRoundLayout(isRound) {
     ensureStatusToggleBtn();
     ensureWpToggleBtn();
+    ensureNearbyToggleBtn();
     ensureCenterTeleportBtn();
     const bar    = document.getElementById('cdOvBar');
     const expand = document.getElementById('cdOvExpandBtn');
     const follow = document.getElementById('cdOvFollowFloat');
     const wpBtn  = document.getElementById('cdWpToggle');
+    const nearbyBtn = document.getElementById('cdNearbyToggle');
     const tpBtn  = document.getElementById('cdCenterTp');
     const dragHandle = ensureRoundDragHandle();
-    if (!bar || !wpBtn || !tpBtn) return;
+    applyRoundMapViewport(isRound);
+    // The status bar may be created later than the map. MOVE must not depend
+    // on it, otherwise a round window can become impossible to move or exit.
+    dragHandle.style.display = isRound ? 'flex' : 'none';
+    if (!bar) return;
 
     if (isRound) {
-      dragHandle.style.display = 'flex';
       // Botão waypoints: remove position:fixed para entrar no flow do bar
-      if (wpBtn.parentNode !== bar) bar.insertBefore(wpBtn, bar.firstChild);
-      if (tpBtn.parentNode !== bar) bar.insertBefore(tpBtn, wpBtn.nextSibling);
-      wpBtn.style.cssText = 'width:30px;height:30px;border-radius:50%;flex:0 0 30px;' +
-        'background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);' +
-        'color:#ffd060;font:14px "Segoe UI";cursor:pointer;' +
-        'box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px);' +
-        'display:flex;align-items:center;justify-content:center;';
-      tpBtn.style.cssText = 'width:30px;height:30px;border-radius:50%;flex:0 0 30px;' +
-        'background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);' +
-        'color:#80b4ff;font:15px "Segoe UI";cursor:pointer;' +
-        'box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px);' +
-        'display:flex;align-items:center;justify-content:center;';
+      if (wpBtn) {
+        if (wpBtn.parentNode !== bar) bar.insertBefore(wpBtn, bar.firstChild);
+        wpBtn.style.cssText = 'width:30px;height:30px;border-radius:50%;flex:0 0 30px;' +
+          'background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);' +
+          'color:#ffd060;font:14px "Segoe UI";cursor:pointer;' +
+          'box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px);' +
+          'display:flex;align-items:center;justify-content:center;';
+      }
+      if (tpBtn) {
+        if (tpBtn.parentNode !== bar) bar.insertBefore(tpBtn, wpBtn ? wpBtn.nextSibling : bar.firstChild);
+        tpBtn.style.cssText = 'width:30px;height:30px;border-radius:50%;flex:0 0 30px;' +
+          'background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);' +
+          'color:#80b4ff;font:15px "Segoe UI";cursor:pointer;' +
+          'box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px);' +
+          'display:flex;align-items:center;justify-content:center;';
+      }
+      if (nearbyBtn && nearbyBtn.parentNode !== bar) {
+        bar.insertBefore(nearbyBtn, tpBtn ? tpBtn.nextSibling : bar.firstChild);
+      }
 
       // Bar centralizada dentro da largura útil do círculo, invisível por padrão
       bar.style.cssText = 'position:fixed;bottom:30px;left:50%;' +
@@ -2853,28 +2999,37 @@
         });
       }
     } else {
-      dragHandle.style.display = 'none';
       // Restaura waypoints button para body com estilo original
-      if (wpBtn.parentNode === bar) document.body.appendChild(wpBtn);
-      if (tpBtn.parentNode === bar) document.body.appendChild(tpBtn);
+      if (wpBtn && wpBtn.parentNode === bar) document.body.appendChild(wpBtn);
+      if (tpBtn && tpBtn.parentNode === bar) document.body.appendChild(tpBtn);
+      if (nearbyBtn && nearbyBtn.parentNode === bar) document.body.appendChild(nearbyBtn);
       const wpPosition = window.__cdMapProvider === 'greymane'
         ? 'left:300px;' : 'left:12px;';
       const tpPosition = window.__cdMapProvider === 'greymane'
         ? 'left:344px;' : 'left:56px;';
-      wpBtn.style.cssText = 'position:fixed;bottom:12px;' + wpPosition + 'z-index:10000;' +
+      const nearbyPosition = window.__cdMapProvider === 'greymane'
+        ? 'left:388px;' : 'left:100px;';
+      if (wpBtn) wpBtn.style.cssText = 'position:fixed;bottom:12px;' + wpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);' +
         'color:#ffd060;font:16px "Segoe UI";cursor:pointer;' +
         'box-shadow:0 3px 12px rgba(0,0,0,.5);' +
         'display:flex;align-items:center;justify-content:center;' +
         'backdrop-filter:blur(4px);transition:border-color .15s,background .15s';
-      tpBtn.style.cssText = 'position:fixed;bottom:12px;' + tpPosition + 'z-index:10000;' +
+      if (tpBtn) tpBtn.style.cssText = 'position:fixed;bottom:12px;' + tpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);' +
         'color:#80b4ff;font:18px "Segoe UI";cursor:pointer;' +
         'box-shadow:0 3px 12px rgba(0,0,0,.5);' +
         'display:flex;align-items:center;justify-content:center;' +
         'backdrop-filter:blur(4px);transition:border-color .15s,background .15s';
+      if (nearbyBtn) nearbyBtn.style.cssText = 'position:fixed;bottom:12px;' + nearbyPosition + 'z-index:10000;' +
+        'width:36px;height:36px;border-radius:50%;' +
+        'background:rgba(12,12,18,.9);border:1px solid rgba(255,96,150,.45);' +
+        'color:#ff6096;font:16px "Segoe UI";cursor:pointer;' +
+        'box-shadow:0 3px 12px rgba(0,0,0,.5);' +
+        'display:' + (nearbyControlsEnabled() ? 'flex' : 'none') + ';align-items:center;justify-content:center;' +
+        'backdrop-filter:blur(4px)';
       bar.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:10000;' +
         'display:flex;gap:4px;align-items:center;opacity:1;pointer-events:auto;';
       if (expand) expand.style.display = '';
@@ -2888,6 +3043,48 @@
       }
     }
   }
+
+  // MapGenie and Greymane are single-page applications. Their framework can
+  // replace the page body after Compact -> Full has already restored our
+  // controls. Repair only when something is actually missing or has the wrong
+  // layout, so the watchdog does not continuously resize/repaint the map.
+  window.__cdRepairCompanionControls = function(force = false) {
+    if (window.__cdRepairControlsBusy) return;
+    window.__cdRepairControlsBusy = true;
+    try {
+      const isCompact = !!(window.__cdSettings && window.__cdSettings.roundWindow);
+      const ids = [
+        'cdOvBar', 'cdOvSettingsBtn', 'cdOvExpandBtn', 'cdOvFollowFloat',
+        'cdWpToggle', 'cdNearbyToggle', 'cdCenterTp'
+      ];
+      const missing = ids.some((id) => !document.getElementById(id));
+
+      ensureStatusToggleBtn();
+      ensureWpToggleBtn();
+      ensureNearbyToggleBtn();
+      ensureCenterTeleportBtn();
+
+      const bar = document.getElementById('cdOvBar');
+      const wp = document.getElementById('cdWpToggle');
+      const nearby = document.getElementById('cdNearbyToggle');
+      const tp = document.getElementById('cdCenterTp');
+      const modeMismatch = document.documentElement.classList.contains('cd-round-minimap') !== isCompact;
+      const fullLayoutBroken = !isCompact && (
+        !bar || bar.parentNode !== document.body || bar.style.display !== 'flex' ||
+        !wp || wp.parentNode !== document.body || wp.style.display !== 'flex' ||
+        !tp || tp.parentNode !== document.body || tp.style.display !== 'flex' ||
+        !nearby || nearby.parentNode !== document.body ||
+        (nearbyControlsEnabled() && nearby.style.display !== 'flex')
+      );
+
+      if (force || missing || modeMismatch || fullLayoutBroken) {
+        applyRoundLayout(isCompact);
+        if (window.__cdUpdateNearbyControls) window.__cdUpdateNearbyControls();
+      }
+    } finally {
+      window.__cdRepairControlsBusy = false;
+    }
+  };
 
   // ── Map settings ──────────────────────────────────────────────────
   const POSITION_KEY = 'mgxbox_last_position';
@@ -3090,16 +3287,15 @@
   ensureWaypointPanel();
   renderWaypoints();
   updateTeleportVisibility();
-  // Greymane's React hydration may remove early body children. Restore only
-  // missing Companion controls without disturbing panels that are already open.
+  // Map sites may replace injected body children during hydration or later SPA
+  // updates. Restore the complete Full-mode control layout when that happens.
   setInterval(() => {
     createCenterCrosshair();
-    ensureWpToggleBtn();
-    ensureCenterTeleportBtn();
-    ensureNearbyToggleBtn();
+    if (window.__cdRepairCompanionControls) {
+      window.__cdRepairCompanionControls(false);
+    }
     updateTeleportVisibility();
-    if (window.__cdUpdateNearbyControls) window.__cdUpdateNearbyControls();
-  }, 500);
+  }, 750);
   connect();
   // MapGenie can expose several thousand marker elements at once. Running its
   // full style pass every 50 ms blocks WebView2 while the page is hydrating.

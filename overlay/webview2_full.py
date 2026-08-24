@@ -15,22 +15,29 @@ class _FullModeApi:
     """Small native bridge used by the WebView2 Full-mode controls."""
 
     GWL_STYLE = -16
+    GWL_EXSTYLE = -20
     WS_CAPTION = 0x00C00000
     WS_THICKFRAME = 0x00040000
     WS_MINIMIZEBOX = 0x00020000
     WS_MAXIMIZEBOX = 0x00010000
     WS_SYSMENU = 0x00080000
+    WS_EX_TRANSPARENT = 0x00000020
     SWP_NOZORDER = 0x0004
     SWP_SHOWWINDOW = 0x0040
     SWP_FRAMECHANGED = 0x0020
     WM_NCLBUTTONDOWN = 0x00A1
     HTCAPTION = 2
+    GW_CHILD = 5
+    GW_HWNDNEXT = 2
 
     class RECT(ctypes.Structure):
         _fields_ = [
             ('left', ctypes.c_long), ('top', ctypes.c_long),
             ('right', ctypes.c_long), ('bottom', ctypes.c_long),
         ]
+
+    class POINT(ctypes.Structure):
+        _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
 
     def __init__(self, cfg, settings, persist_config):
         self.cfg = cfg
@@ -39,6 +46,8 @@ class _FullModeApi:
         self.window = None
         self._square_style = None
         self._native_round = False
+        self._dragging = False
+        self._managed_region = None
         self._lock = threading.RLock()
         self.user32 = ctypes.windll.user32
         self.gdi32 = ctypes.windll.gdi32
@@ -56,10 +65,16 @@ class _FullModeApi:
         self.user32.SetWindowPos.restype = ctypes.c_int
         self.user32.SetWindowRgn.argtypes = [hwnd_t, ctypes.c_void_p, ctypes.c_int]
         self.user32.SetWindowRgn.restype = ctypes.c_int
+        self.user32.GetWindow.argtypes = [hwnd_t, ctypes.c_uint]
+        self.user32.GetWindow.restype = hwnd_t
         self.user32.SendMessageW.argtypes = [
             hwnd_t, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
         ]
         self.user32.SendMessageW.restype = ctypes.c_void_p
+        self.user32.GetCursorPos.argtypes = [ctypes.POINTER(self.POINT)]
+        self.user32.GetCursorPos.restype = ctypes.c_int
+        self.user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        self.user32.GetAsyncKeyState.restype = ctypes.c_short
         self.gdi32.CreateEllipticRgn.argtypes = [
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ]
@@ -108,6 +123,88 @@ class _FullModeApi:
         if self.persist_config:
             self.persist_config(self.cfg)
 
+    def _set_transparent_corners(self, enabled):
+        """Use the WinForms transparency key behind the clipped WebView."""
+        native = getattr(self.window, 'native', None) if self.window else None
+        if native is None:
+            return
+        try:
+            from System import Action
+            from System.Drawing import Color
+
+            def apply():
+                if enabled:
+                    key = Color.FromArgb(1, 0, 1)
+                    native.AllowTransparency = True
+                    native.BackColor = key
+                    native.TransparencyKey = key
+                else:
+                    native.TransparencyKey = Color.Empty
+                    native.BackColor = Color.Black
+
+            if native.InvokeRequired:
+                native.Invoke(Action(apply))
+            else:
+                apply()
+        except Exception as exc:
+            print(f'[!] Cannot update circular window transparency: {exc}')
+
+    def _set_managed_region(self, enabled, width=0, height=0):
+        """Clip the WinForms host itself, including WebView2 composition."""
+        native = getattr(self.window, 'native', None) if self.window else None
+        if native is None:
+            return
+        try:
+            from System import Action
+            from System.Drawing import Region
+            from System.Drawing.Drawing2D import GraphicsPath
+
+            def apply():
+                old_region = self._managed_region
+                if not enabled:
+                    native.Region = None
+                    self._managed_region = None
+                else:
+                    path = GraphicsPath()
+                    path.AddEllipse(0, 0, max(1, int(width)), max(1, int(height)))
+                    region = Region(path)
+                    native.Region = region
+                    self._managed_region = region
+                    path.Dispose()
+                if old_region is not None and old_region is not self._managed_region:
+                    old_region.Dispose()
+
+            if native.InvokeRequired:
+                native.Invoke(Action(apply))
+            else:
+                apply()
+        except Exception as exc:
+            print(f'[!] Cannot update managed circular region: {exc}')
+
+    def _set_child_regions(self, hwnd, enabled, width=0, height=0):
+        """Clip the native WebView host child, which can outdraw its parent."""
+        child = self.user32.GetWindow(hwnd, self.GW_CHILD)
+        while child:
+            if enabled:
+                region = self.gdi32.CreateEllipticRgn(
+                    0, 0, max(1, int(width)), max(1, int(height)))
+                if region and not self.user32.SetWindowRgn(child, region, True):
+                    self.gdi32.DeleteObject(region)
+            else:
+                self.user32.SetWindowRgn(child, None, True)
+            child = self.user32.GetWindow(child, self.GW_HWNDNEXT)
+
+    def _make_children_interactive(self, hwnd):
+        """Undo pywebview's click-through flag without losing transparency."""
+        child = self.user32.GetWindow(hwnd, self.GW_CHILD)
+        while child:
+            exstyle = int(self.user32.GetWindowLongW(child, self.GWL_EXSTYLE))
+            if exstyle & self.WS_EX_TRANSPARENT:
+                self.user32.SetWindowLongW(
+                    child, self.GWL_EXSTYLE,
+                    ctypes.c_long(exstyle & ~self.WS_EX_TRANSPARENT).value)
+            child = self.user32.GetWindow(child, self.GW_HWNDNEXT)
+
     def _apply_shape(self, enabled, remember_current=True):
         with self._lock:
             hwnd = self._hwnd()
@@ -137,8 +234,18 @@ class _FullModeApi:
                 width_px = max(1, round(size * scale))
                 height_px = width_px
 
+                # Do not use WinForms TransparencyKey here. WebView2 is drawn
+                # by a separate composition surface, so Windows sees only the
+                # transparent key underneath it and sends every mouse event to
+                # the game. Native regions below provide the circular shape
+                # while keeping the whole minimap interactive.
+                self._set_transparent_corners(False)
+
+                # Compact mode is a regular resizable square/rectangle. Keep
+                # WS_THICKFRAME so every edge and corner can resize it, while
+                # removing only the title bar and its window buttons.
                 borderless = style & ~(
-                    self.WS_CAPTION | self.WS_THICKFRAME | self.WS_MINIMIZEBOX |
+                    self.WS_CAPTION | self.WS_MINIMIZEBOX |
                     self.WS_MAXIMIZEBOX | self.WS_SYSMENU)
                 user32.SetWindowLongW(
                     hwnd, self.GWL_STYLE, ctypes.c_long(borderless).value)
@@ -147,12 +254,13 @@ class _FullModeApi:
                     width_px, height_px,
                     self.SWP_NOZORDER | self.SWP_SHOWWINDOW | self.SWP_FRAMECHANGED,
                 )
-                region = gdi32.CreateEllipticRgn(0, 0, width_px, height_px)
-                if not region or not user32.SetWindowRgn(hwnd, region, True):
-                    if region:
-                        gdi32.DeleteObject(region)
-                    return {'ok': False, 'roundWindow': self._native_round,
-                            'error': 'Cannot apply circular window region'}
+                # Clear any ellipse left by an older circular build. WebView2
+                # renders on a separate composition surface, so a rectangular
+                # compact window is the reliable, fully interactive option.
+                self._set_managed_region(False)
+                user32.SetWindowRgn(hwnd, None, True)
+                self._set_child_regions(hwnd, False)
+                self._make_children_interactive(hwnd)
                 self._native_round = True
                 self.cfg['roundWindow'] = True
                 self.settings['roundWindow'] = True
@@ -160,6 +268,9 @@ class _FullModeApi:
                 if remember_current and self._native_round:
                     self._save_rect('round', current, scale)
 
+                self._set_managed_region(False)
+                self._set_child_regions(hwnd, False)
+                self._set_transparent_corners(False)
                 user32.SetWindowRgn(hwnd, None, True)
                 user32.SetWindowLongW(
                     hwnd, self.GWL_STYLE, ctypes.c_long(self._square_style).value)
@@ -193,11 +304,34 @@ class _FullModeApi:
 
     def drag_window(self):
         hwnd = self._hwnd()
-        if not hwnd:
+        if not hwnd or self._dragging:
             return False
-        user32 = self.user32
-        user32.ReleaseCapture()
-        user32.SendMessageW(hwnd, self.WM_NCLBUTTONDOWN, self.HTCAPTION, None)
+
+        def worker():
+            self._dragging = True
+            try:
+                start_cursor = self.POINT()
+                start_rect = self._rect(hwnd)
+                if start_rect is None or not self.user32.GetCursorPos(ctypes.byref(start_cursor)):
+                    return
+                while self.user32.GetAsyncKeyState(0x01) & 0x8000:
+                    cursor = self.POINT()
+                    if self.user32.GetCursorPos(ctypes.byref(cursor)):
+                        self.user32.SetWindowPos(
+                            hwnd, None,
+                            start_rect.left + cursor.x - start_cursor.x,
+                            start_rect.top + cursor.y - start_cursor.y,
+                            0, 0, self.SWP_NOZORDER | 0x0001,
+                        )
+                    time.sleep(0.01)
+                rect = self._rect(hwnd)
+                if rect is not None:
+                    self._save_rect('round' if self._native_round else 'square', rect, self._scale())
+                    self._persist()
+            finally:
+                self._dragging = False
+
+        threading.Thread(target=worker, name='cd-round-drag', daemon=True).start()
         return True
 
     def save_geometry(self):
@@ -298,6 +432,8 @@ def run(cfg, url, inject_js, start_server_thread, app_dir, settings,
         min_size=(240, 240),
         on_top=True,
         background_color='#000000',
+        transparent=False,
+        shadow=False,
     )
     native_api.bind(window)
 

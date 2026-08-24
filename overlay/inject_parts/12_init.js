@@ -10,16 +10,15 @@
   ensureWaypointPanel();
   renderWaypoints();
   updateTeleportVisibility();
-  // Greymane's React hydration may remove early body children. Restore only
-  // missing Companion controls without disturbing panels that are already open.
+  // Map sites may replace injected body children during hydration or later SPA
+  // updates. Restore the complete Full-mode control layout when that happens.
   setInterval(() => {
     createCenterCrosshair();
-    ensureWpToggleBtn();
-    ensureCenterTeleportBtn();
-    ensureNearbyToggleBtn();
+    if (window.__cdRepairCompanionControls) {
+      window.__cdRepairCompanionControls(false);
+    }
     updateTeleportVisibility();
-    if (window.__cdUpdateNearbyControls) window.__cdUpdateNearbyControls();
-  }, 500);
+  }, 750);
   connect();
   // MapGenie can expose several thousand marker elements at once. Running its
   // full style pass every 50 ms blocks WebView2 while the page is hydrating.
