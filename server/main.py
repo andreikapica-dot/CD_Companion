@@ -378,7 +378,19 @@ async def _handle_client(websocket):
                 lng = cmd.get("lng")
                 lat = cmd.get("lat")
                 realm = cmd.get("realm", "pywel")
-                if None not in (lng, lat) and _last_pos and realm in CALIBRATION_FILES:
+                if realm not in CALIBRATION_FILES:
+                    await _safe_send(websocket, json.dumps(
+                        {"type": "calibration_result", "ok": False,
+                         "err": f"Unknown realm: {realm}"}))
+                elif None in (lng, lat):
+                    await _safe_send(websocket, json.dumps(
+                        {"type": "calibration_result", "ok": False,
+                         "err": "Map coordinates were not received"}))
+                elif not _last_pos:
+                    await _safe_send(websocket, json.dumps(
+                        {"type": "calibration_result", "ok": False,
+                         "err": "Waiting for the player position — move in game and try again"}))
+                else:
                     # Only append real user points.  The effective calibration may
                     # contain built-in/synthetic points and must never be persisted.
                     cal = _load_saved_calibration(realm)

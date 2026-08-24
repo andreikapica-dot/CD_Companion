@@ -27,6 +27,12 @@ def main():
         with open(os.path.join(parts_dir, p), encoding='utf-8') as f:
             concat += f.read()
 
+    if '--write' in sys.argv:
+        output = os.path.join(parts_dir, '..', 'inject.js')
+        with open(output, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(concat)
+        print(f'WROTE — {os.path.abspath(output)}')
+
     tmp = os.path.join(tempfile.gettempdir(), 'inject_check.js')
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write(concat)

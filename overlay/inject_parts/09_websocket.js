@@ -112,6 +112,13 @@
           setStatus(msg.ok ? 'Hotkeys saved' : (msg.err || 'Could not save hotkeys'),
             msg.ok ? '#60e890' : '#e07070', 3500);
 
+        } else if (msg.type === 'calibration_result') {
+          const text = msg.ok
+            ? (msg.reset ? 'Calibration reset.' : `Calibration saved (${msg.count || 1} point${msg.count === 1 ? '' : 's'}).`)
+            : (msg.err || 'Calibration failed.');
+          _setFullSettingsStatus(text, !!msg.ok);
+          setStatus(text, msg.ok ? '#60e890' : '#e07070', 4000);
+
         } else if (msg.type === 'location_toggle') {
           if (msg.sourceClientId && msg.sourceClientId === CLIENT_ID) return;
           _onLocationToggle(msg.locationId, msg.found);

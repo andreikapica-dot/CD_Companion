@@ -1,3 +1,29 @@
+  function ensureRoundDragHandle() {
+    let handle = document.getElementById('cdRoundDragHandle');
+    if (handle) return handle;
+    handle = document.createElement('button');
+    handle.id = 'cdRoundDragHandle';
+    handle.type = 'button';
+    handle.title = 'Drag circular window';
+    handle.textContent = '✥';
+    handle.style.cssText = 'position:fixed;top:9px;left:50%;transform:translateX(-50%);' +
+      'z-index:10005;width:38px;height:24px;display:none;align-items:center;justify-content:center;' +
+      'border-radius:12px;border:1px solid rgba(255,208,96,.4);background:rgba(12,12,18,.72);' +
+      'color:#ffd060;font:15px Segoe UI;cursor:move;opacity:.48;transition:opacity .15s';
+    handle.addEventListener('mouseenter', () => { handle.style.opacity = '1'; });
+    handle.addEventListener('mouseleave', () => { handle.style.opacity = '.48'; });
+    handle.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      if (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.drag_window === 'function') {
+        window.pywebview.api.drag_window();
+      }
+    });
+    document.body.appendChild(handle);
+    return handle;
+  }
+
   function applyRoundLayout(isRound) {
     ensureStatusToggleBtn();
     ensureWpToggleBtn();
@@ -7,9 +33,11 @@
     const follow = document.getElementById('cdOvFollowFloat');
     const wpBtn  = document.getElementById('cdWpToggle');
     const tpBtn  = document.getElementById('cdCenterTp');
+    const dragHandle = ensureRoundDragHandle();
     if (!bar || !wpBtn || !tpBtn) return;
 
     if (isRound) {
+      dragHandle.style.display = 'flex';
       // Botão waypoints: remove position:fixed para entrar no flow do bar
       if (wpBtn.parentNode !== bar) bar.insertBefore(wpBtn, bar.firstChild);
       if (tpBtn.parentNode !== bar) bar.insertBefore(tpBtn, wpBtn.nextSibling);
@@ -77,6 +105,7 @@
         });
       }
     } else {
+      dragHandle.style.display = 'none';
       // Restaura waypoints button para body com estilo original
       if (wpBtn.parentNode === bar) document.body.appendChild(wpBtn);
       if (tpBtn.parentNode === bar) document.body.appendChild(tpBtn);

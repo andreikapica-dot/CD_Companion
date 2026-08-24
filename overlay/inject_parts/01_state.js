@@ -37,6 +37,7 @@
   let waypointFilter  = '';
   let hasPreTeleport  = false;
   let teleportEnabled = !(window.__cdSettings && window.__cdSettings.teleportEnabled === false);
+  let calibrationMode = false;
   document.addEventListener('keydown', (e) => { if (e.key === 'Shift') shiftHeld = true;  });
   document.addEventListener('keyup',   (e) => { if (e.key === 'Shift') shiftHeld = false; });
 

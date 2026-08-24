@@ -1243,6 +1243,7 @@ def main():
             webview2_settings,
             map_provider=map_provider,
             greymane_adapter_js=GREYMANE_ADAPTER_JS,
+            persist_config=save_config,
         )
         return
 

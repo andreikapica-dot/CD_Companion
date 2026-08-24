@@ -1,15 +1,3 @@
-// =============================================================================
-// NAO EDITAR ESTE ARQUIVO DIRETAMENTE.
-//
-// Este arquivo e gerado/fallback. A fonte de verdade sao os fragmentos em:
-//   overlay/inject_parts/
-//
-// Para editar qualquer comportamento do JS injetado:
-//   1. Identifique o fragmento correto em overlay/inject_parts/ (ver AGENTS.md
-//      em research/inject_parts_agents.md)
-//   2. Edite o fragmento correspondente
-//   3. Valide: python scripts/check_inject.py
-// =============================================================================
 
 (function () {
   const iv = setInterval(() => {
@@ -31,12 +19,14 @@
   const NATIVE_REALTIME = !!window.__cdNativeRealtimeEnabled;
   const CENTER_TELEPORT_Y_KEY = 'cd_center_teleport_y';
   const NEARBY_RESPECT_MAP_VISIBILITY_KEY = 'cd_nearby_respect_map_visibility';
+  const NEARBY_STAY_IN_LIST_KEY = 'cd_nearby_stay_in_list';
   const CLIENT_ID = (window.crypto && typeof window.crypto.randomUUID === 'function')
     ? window.crypto.randomUUID()
     : `overlay-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   let ws              = null;
   let marker          = null;
+  let playerLngLat    = null;
   let mapMarker       = null;
   let mapDestLng      = null;
   let mapDestLat      = null;
@@ -54,11 +44,19 @@
   let nearbyPopup     = null;
   let nearbyInputHandler = null;
   let nearbySelectionActive = false;
+  let crosshairListenersBound = false;
   let waypointFilter  = '';
   let hasPreTeleport  = false;
   let teleportEnabled = !(window.__cdSettings && window.__cdSettings.teleportEnabled === false);
+  let calibrationMode = false;
   document.addEventListener('keydown', (e) => { if (e.key === 'Shift') shiftHeld = true;  });
   document.addEventListener('keyup',   (e) => { if (e.key === 'Shift') shiftHeld = false; });
+
+  function _t(key) {
+    const dict = window.__cdSettings && window.__cdSettings.i18n;
+    if (!dict || typeof dict[key] === 'undefined') return key;
+    return dict[key];
+  }
 
   // ── Tooltip de localização (hover sobre ícones do mapa) ──────────────
   let _tooltip = null;
@@ -124,18 +122,70 @@
   window.__cdUpdateMapIconSize = adjustIconSize;
 
   function getMap() {
-    if (map) return map;
+    if (map) {
+      const container = typeof map.getContainer === 'function' ? map.getContainer() : null;
+      if (window.map === map && container && container.isConnected) return map;
+      try { if (marker) marker.remove(); } catch (_) {}
+      try { if (mapMarker) mapMarker.remove(); } catch (_) {}
+      marker = null;
+      mapMarker = null;
+      map = null;
+    }
     if (window.map && typeof window.map.easeTo === 'function') {
       map = window.map;
       createMarker();
       createMapMarker();
       adjustIconSize();
       map.on('zoom', adjustIconSize);
+      map.on('resize', updateCenterCrosshairViewport);
+      map.on('move', updateCenterCrosshairViewport);
+      map.on('resize', updatePlayerMarkerScreen);
+      map.on('move', updatePlayerMarkerScreen);
+      map.on('zoom', updatePlayerMarkerScreen);
       initLocationTooltip(map);
+      if (window.__cdMapProvider !== 'greymane') {
+        ensureBaseMapLayer(map);
+        map.on('styledata', () => ensureBaseMapLayer(map));
+      }
     }
     return map;
   }
-  const mapIv = setInterval(() => { if (getMap()) clearInterval(mapIv); }, 500);
+  // Greymane may replace the MapLibre instance after React hydration.
+  // Keep the marker attached to the current live map instead of stopping
+  // discovery after the first instance was found.
+  setInterval(() => {
+    const liveMap = getMap();
+    if (liveMap && marker && lastPos) marker.setLngLat([lastPos.lng, lastPos.lat]);
+    updateCenterCrosshairViewport();
+  }, 500);
+
+  function ensureBaseMapLayer(m) {
+    if (!m || !m.getStyle || !m.addSource || !m.addLayer) {
+      setTimeout(() => ensureBaseMapLayer(m), 500);
+      return;
+    }
+    try {
+      const layers = (m.getStyle().layers || []);
+      const sourceId = '__cd_pywel_tiles';
+      const layerId = '__cd_pywel_base';
+      if (!m.getSource(sourceId)) {
+        m.addSource(sourceId, {
+          type: 'raster',
+          tiles: ['https://tiles.mapgenie.io/games/crimson-desert/pywel/default-v3/{z}/{y}/{x}.jpg'],
+          tileSize: 256,
+          minzoom: 8,
+          maxzoom: 19,
+          scheme: 'xyz'
+        });
+      }
+      if (!m.getLayer(layerId)) {
+        m.addLayer({ id: layerId, type: 'raster', source: sourceId,
+          paint: { 'raster-opacity': 1 } }, layers.length ? layers[0].id : undefined);
+      }
+    } catch (_) {
+      setTimeout(() => ensureBaseMapLayer(m), 1000);
+    }
+  }
 
   function createMapMarker() {
     if (mapMarker || !map) return;
@@ -174,11 +224,11 @@
       font:12px 'Segoe UI',sans-serif;color:#e8e8e8;white-space:nowrap;
     `;
     popup.innerHTML = `
-      <span style="font-size:11px;color:#aaa">Map Marker</span>
+      <span style="font-size:11px;color:#aaa">${_t('marker.map_marker_label')}</span>
       <button id="cdMapMarkerTpBtn"
         style="background:rgba(255,80,80,.2);border:1px solid rgba(255,80,80,.5);
         color:#ff6666;font:11px 'Segoe UI';padding:3px 10px;border-radius:4px;cursor:pointer">
-        📍 Teleport here
+        ${_t('marker.teleport_here')}
       </button>
     `;
     document.body.appendChild(popup);
@@ -264,7 +314,7 @@
     if (marker || !map) return;
     const el = document.createElement('div');
     el.id = 'cdPlayerMarker';
-    el.style.cssText = 'position:relative;width:0;height:0;pointer-events:none;z-index:10002!important';
+    el.style.cssText = 'position:fixed;width:0;height:0;pointer-events:none;z-index:10002!important;display:none';
     el.innerHTML = `
       <svg id="cdArrow" viewBox="-12 -12 24 24" xmlns="http://www.w3.org/2000/svg"
         style="position:absolute;width:24px;height:24px;transform:translate(-50%,-50%);
@@ -281,9 +331,36 @@
       s.textContent = '@keyframes cdPulse{0%{width:16px;height:16px;opacity:.8}100%{width:38px;height:38px;opacity:0}}';
       document.head.appendChild(s);
     }
-    marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
-      .setLngLat([0, 0]).addTo(map);
-    marker.getElement().style.setProperty('z-index', '10002', 'important');
+    document.body.appendChild(el);
+    marker = {
+      getElement: () => el,
+      setLngLat: (coords) => {
+        playerLngLat = coords;
+        updatePlayerMarkerScreen();
+        return marker;
+      },
+      remove: () => el.remove(),
+    };
+    el.style.setProperty('z-index', '10002', 'important');
+  }
+
+  function updatePlayerMarkerScreen() {
+    const liveMap = map;
+    const el = marker && marker.getElement();
+    if (!liveMap || !el || !playerLngLat) return;
+    try {
+      const rect = liveMap.getContainer().getBoundingClientRect();
+      const point = liveMap.project(playerLngLat);
+      const x = rect.left + point.x;
+      const y = rect.top + point.y;
+      const visible = point.x >= 0 && point.y >= 0 &&
+        point.x <= rect.width && point.y <= rect.height;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.display = visible ? 'block' : 'none';
+    } catch (_) {
+      el.style.display = 'none';
+    }
   }
 
   function updateHeading(newPos) {
@@ -405,7 +482,7 @@
     // Botão expand/collapse (abre o painel completo)
     const expand = document.createElement('button');
     expand.id = 'cdOvExpandBtn';
-    expand.title = 'Expandir painel';
+    expand.title = _t('panel.expand');
     expand.textContent = '⊞';
     expand.style.cssText = `width:28px;height:36px;border-radius:6px;
       background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.25);
@@ -420,23 +497,206 @@
       const visible = panel.style.display !== 'none';
       panel.style.display = visible ? 'none' : 'block';
       expand.textContent = visible ? '⊞' : '⊟';
+      expand.title = visible ? _t('panel.expand') : _t('panel.collapse');
     });
+
+    const settingsBtn = document.createElement('button');
+    settingsBtn.id = 'cdOvSettingsBtn';
+    settingsBtn.title = 'Hotkey settings';
+    settingsBtn.textContent = '⚙';
+    settingsBtn.style.cssText = `width:28px;height:36px;border-radius:6px;
+      background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.25);
+      color:#bbb;font:15px 'Segoe UI';cursor:pointer;`;
+    settingsBtn.addEventListener('click', toggleHotkeySettings);
 
     // Botão follow (sempre visível, reflete estado)
     const followBtn = document.createElement('button');
     followBtn.id = 'cdOvFollowFloat';
-    followBtn.title = 'Toggle Follow';
+    followBtn.title = _t('panel.toggle_follow');
     followBtn.style.cssText = `height:36px;padding:0 12px;border-radius:6px;
       background:rgba(12,30,20,.95);border:1.5px solid rgba(80,220,120,.6);
       color:#60e890;font:bold 11px 'Segoe UI',sans-serif;cursor:pointer;
       box-shadow:0 3px 12px rgba(0,0,0,.6);backdrop-filter:blur(6px);
       white-space:nowrap;transition:background .15s,border-color .15s,color .15s`;
-    followBtn.textContent = '🗺 Follow: ON';
+    followBtn.textContent = _t('panel.follow_on');
     followBtn.addEventListener('click', toggleFollow);
 
+    bar.appendChild(settingsBtn);
     bar.appendChild(expand);
     bar.appendChild(followBtn);
     document.body.appendChild(bar);
+  }
+
+  const _hotkeyDraft = {
+    teleport_marker: { vk: 0x74, mods: [] },
+    abort: { vk: 0x74, mods: [0x10] },
+    open_nearby: { vk: 0x4E, mods: [0x10] },
+    open_waypoints: { vk: 0x59, mods: [0x10] },
+  };
+  const _hotkeyNames = {
+    teleport_marker: 'Teleport', abort: 'Return / cancel',
+    open_nearby: 'Nearby', open_waypoints: 'Waypoints',
+  };
+
+  function _setFullSettingsStatus(message, ok = true) {
+    const status = document.getElementById('cdFullSettingsStatus');
+    if (!status) return;
+    status.textContent = message || '';
+    status.style.color = ok ? '#70df92' : '#ff7777';
+  }
+
+  function setCalibrationMode(enabled) {
+    calibrationMode = !!enabled;
+    const btn = document.getElementById('cdCalibrateMarker');
+    if (btn) btn.textContent = calibrationMode
+      ? 'Click your exact position on the map…' : 'Calibrate marker';
+    if (!calibrationMode) return;
+
+    const liveMap = getMap();
+    if (!liveMap || typeof liveMap.once !== 'function') {
+      calibrationMode = false;
+      if (btn) btn.textContent = 'Calibrate marker';
+      _setFullSettingsStatus('Map is not ready yet. Try again in a moment.', false);
+      return;
+    }
+
+    _setFullSettingsStatus('Now click your exact in-game position on the map.');
+    liveMap.once('click', (event) => {
+      if (!calibrationMode) return;
+      calibrationMode = false;
+      if (btn) btn.textContent = 'Calibrate marker';
+      const lngLat = event && event.lngLat;
+      if (!lngLat) {
+        _setFullSettingsStatus('The map click did not provide coordinates.', false);
+        return;
+      }
+      sendCmd({
+        cmd: 'add_calibration',
+        lng: lngLat.lng,
+        lat: lngLat.lat,
+        realm: lastPos && lastPos.realm ? lastPos.realm : 'pywel',
+      });
+      _setFullSettingsStatus('Calibration point sent. Move in game to refresh the marker.');
+    });
+  }
+
+  async function setNativeRoundWindow(enabled) {
+    const checkbox = document.getElementById('cdRoundWindow');
+    try {
+      if (!(window.pywebview && window.pywebview.api &&
+            typeof window.pywebview.api.set_round_window === 'function')) {
+        throw new Error('Round window is available only in the Full desktop version.');
+      }
+      const result = await window.pywebview.api.set_round_window(!!enabled);
+      if (!result || result.ok === false) {
+        throw new Error(result && result.error ? result.error : 'Cannot change the window shape.');
+      }
+      if (!window.__cdSettings) window.__cdSettings = {};
+      window.__cdSettings.roundWindow = !!result.roundWindow;
+      if (checkbox) checkbox.checked = !!result.roundWindow;
+      applyRoundLayout(!!result.roundWindow);
+      _setFullSettingsStatus(result.roundWindow
+        ? 'Circular minimap enabled. Drag it using the handle at the top.'
+        : 'Full window restored.');
+    } catch (error) {
+      if (checkbox) checkbox.checked = !enabled;
+      _setFullSettingsStatus(String(error && (error.message || error)), false);
+    }
+  }
+
+  function _hotkeyText(hk) {
+    const mods = (hk.mods || []).map(m => ({16:'Shift',17:'Ctrl',18:'Alt'}[m])).filter(Boolean);
+    const vk = hk.vk;
+    const key = vk >= 0x70 && vk <= 0x87 ? `F${vk - 0x6F}`
+      : (vk >= 0x41 && vk <= 0x5A ? String.fromCharCode(vk) : `0x${vk.toString(16)}`);
+    return [...mods, key].join('+');
+  }
+
+  function _eventToHotkey(e) {
+    let vk = 0;
+    if (/^F([1-9]|1\d|2[0-4])$/.test(e.code)) vk = 0x6F + Number(e.code.slice(1));
+    else if (/^Key[A-Z]$/.test(e.code)) vk = e.code.charCodeAt(3);
+    if (!vk) return null;
+    const mods = [];
+    if (e.shiftKey) mods.push(0x10);
+    if (e.ctrlKey) mods.push(0x11);
+    if (e.altKey) mods.push(0x12);
+    return { vk, mods };
+  }
+
+  function _refreshHotkeyInputs() {
+    Object.entries(_hotkeyDraft).forEach(([id, hk]) => {
+      const input = document.getElementById(`cdHk_${id}`);
+      if (input) input.value = _hotkeyText(hk);
+    });
+  }
+
+  function ensureHotkeySettings() {
+    let panel = document.getElementById('cdHotkeySettings');
+    if (panel) return panel;
+    panel = document.createElement('div');
+    panel.id = 'cdHotkeySettings';
+    panel.style.cssText = `position:fixed;right:12px;bottom:56px;z-index:10002;width:270px;
+      padding:11px 12px;background:rgba(12,12,18,.96);color:#e8e8e8;
+      border:1px solid rgba(255,208,96,.35);border-radius:7px;box-shadow:0 4px 18px rgba(0,0,0,.55);
+      font:12px/1.4 'Segoe UI',system-ui,sans-serif;display:none`;
+    panel.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="color:#ffd060;flex:1">⚙ Settings</b><button id="cdHkClose" style="border:0;background:transparent;color:#bbb;font:18px Segoe UI;cursor:pointer">×</button></div>
+      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdNearbyEnabled" type="checkbox"> Nearby — show radius and list</label>
+      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Circular minimap window</label>
+      <div style="display:flex;gap:6px;margin:0 0 8px">
+        <button id="cdCalibrateMarker" style="flex:1;background:#20202b;color:#ffd060;border:1px solid rgba(255,208,96,.35);border-radius:4px;padding:6px;cursor:pointer">Calibrate marker</button>
+        <button id="cdResetCalibration" style="background:#20202b;color:#ddd;border:1px solid #444;border-radius:4px;padding:6px;cursor:pointer">Reset</button>
+      </div>
+      <div id="cdFullSettingsStatus" style="min-height:14px;color:#999;font-size:10px;margin:0 0 8px"></div>
+      <div style="color:#999;font-size:11px;margin-bottom:8px">Click a field, then press a key combination.</div>
+      ${Object.entries(_hotkeyNames).map(([id, title]) => `<label style="display:block;margin:6px 0;color:#ccc">${title}<input id="cdHk_${id}" data-hotkey="${id}" readonly style="box-sizing:border-box;width:100%;margin-top:2px;background:#191923;color:#ffd060;border:1px solid rgba(255,208,96,.3);border-radius:4px;padding:5px 7px;cursor:pointer"></label>`).join('')}
+      <button id="cdHkSave" style="width:100%;margin-top:7px;background:rgba(255,208,96,.15);color:#ffd060;border:1px solid rgba(255,208,96,.45);border-radius:4px;padding:6px;cursor:pointer">Save hotkeys</button>
+      <div style="font-size:10px;color:#888;margin-top:7px">These four hotkeys work while Crimson Desert is active.</div>`;
+    document.body.appendChild(panel);
+    const nearbyEnabled = document.getElementById('cdNearbyEnabled');
+    nearbyEnabled.checked = typeof nearbyControlsEnabled === 'function' && nearbyControlsEnabled();
+    nearbyEnabled.addEventListener('change', () => {
+      if (typeof setNearbyControlsEnabled === 'function') {
+        setNearbyControlsEnabled(nearbyEnabled.checked);
+      }
+    });
+    const roundWindow = document.getElementById('cdRoundWindow');
+    roundWindow.checked = !!(window.__cdSettings && window.__cdSettings.roundWindow);
+    roundWindow.addEventListener('change', () => {
+      setNativeRoundWindow(roundWindow.checked);
+    });
+    document.getElementById('cdCalibrateMarker').addEventListener('click', () => {
+      setCalibrationMode(!calibrationMode);
+    });
+    document.getElementById('cdResetCalibration').addEventListener('click', () => {
+      setCalibrationMode(false);
+      sendCmd({
+        cmd: 'reset_calibration',
+        realm: lastPos && lastPos.realm ? lastPos.realm : 'pywel',
+      });
+      _setFullSettingsStatus('Calibration reset. Move in game to refresh the marker.');
+    });
+    document.getElementById('cdHkClose').addEventListener('click', () => {
+      panel.style.display = 'none';
+      sendCmd({ cmd: 'hotkey_editing', active: false });
+    });
+    panel.querySelectorAll('input[data-hotkey]').forEach(input => input.addEventListener('keydown', e => {
+      const hk = _eventToHotkey(e);
+      if (!hk) return;
+      e.preventDefault();
+      _hotkeyDraft[input.dataset.hotkey] = hk;
+      _refreshHotkeyInputs();
+    }));
+    document.getElementById('cdHkSave').addEventListener('click', () => sendCmd({ cmd: 'set_hotkeys', hotkeys: _hotkeyDraft }));
+    _refreshHotkeyInputs();
+    return panel;
+  }
+
+  function toggleHotkeySettings() {
+    const panel = ensureHotkeySettings();
+    const show = panel.style.display === 'none';
+    panel.style.display = show ? 'block' : 'none';
+    sendCmd({ cmd: 'hotkey_editing', active: show });
   }
 
   // ── Painel de status (direita, oculto por padrão) ─────────────────
@@ -452,7 +712,7 @@
       box-shadow:0 4px 18px rgba(0,0,0,.5);user-select:none;display:none`;
     el.innerHTML = `
       <div id="cdOvCoords" style="font:11px/1.5 Consolas,monospace;color:#bbb;margin-bottom:2px">--</div>
-      <div id="cdOvStatus" style="font-size:10px;color:#e07070">Connecting…</div>
+      <div id="cdOvStatus" style="font-size:10px;color:#e07070">${_t('panel.connecting')}</div>
       <div id="cdOvTeleportRow" style="display:flex;gap:4px;margin-top:5px${teleportEnabled ? '' : ';display:none'}">
         <button id="cdOvMarker" title="Teleport to the browser map crosshair"
           style="flex:1;background:rgba(100,160,255,.15);border:1px solid rgba(100,160,255,.4);
@@ -468,14 +728,12 @@
           style="flex:1;background:rgba(255,100,100,.12);border:1px solid rgba(255,100,100,.35);
           color:#ff8080;font:10px 'Segoe UI';padding:3px 5px;border-radius:4px;
           cursor:pointer;opacity:.35;pointer-events:none">
-          ↩ Abort
+          ${_t('panel.abort')}
         </button>
       </div>
     `;
     document.body.appendChild(el);
     document.getElementById('cdOvMarker').addEventListener('click', () => {
-      // The MapGenie crosshair is the visible center of the browser map.
-      // This avoids relying on the game's destination-marker memory hook.
       teleportMapCenter();
     });
     document.getElementById('cdOvSetF5').addEventListener('click', () => {
@@ -497,8 +755,8 @@
     const followFloat = document.getElementById('cdOvFollowFloat');
     if (followFloat) {
       const isRound = !!(window.__cdSettings && window.__cdSettings.roundWindow);
-      followFloat.textContent  = isRound ? 'F' : `🗺 Follow: ${following ? 'ON' : 'OFF'}`;
-      followFloat.title = `Toggle Follow (${following ? 'ON' : 'OFF'})`;
+      followFloat.textContent  = isRound ? _t('panel.follow_short') : (following ? _t('panel.follow_on') : _t('panel.follow_off'));
+      followFloat.title = _t('panel.toggle_follow_state').replace('{0}', following ? 'ON' : 'OFF');
       followFloat.style.background  = following ? 'rgba(12,30,20,.95)'  : 'rgba(30,20,0,.95)';
       followFloat.style.borderColor = following ? 'rgba(80,220,120,.6)' : 'rgba(255,208,96,.6)';
       followFloat.style.color       = following ? '#60e890' : '#ffd060';
@@ -513,8 +771,8 @@
     if (status) {
       const ok = ws && ws.readyState === 1;
       status.textContent = ok
-        ? (lastPos ? `Realm: ${lastPos.realm}` : 'Move the character to start')
-        : 'Server offline';
+        ? (lastPos ? _t('panel.realm').replace('{0}', lastPos.realm) : _t('panel.move_to_start'))
+        : _t('panel.server_offline');
       status.style.color = ok ? '#60e890' : '#e07070';
     }
     if (abort) {
@@ -546,10 +804,55 @@
   }
 
   function createCenterCrosshair() {
-    if (document.getElementById('cdCenterCrosshair')) return;
-    const el = document.createElement('div');
-    el.id = 'cdCenterCrosshair';
-    document.body.appendChild(el);
+    let el = document.getElementById('cdCenterCrosshair');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cdCenterCrosshair';
+      el.innerHTML = `
+        <div id="cdCrosshairH" style="position:absolute;left:0;width:100vw;height:1px;background:rgba(255,208,96,.42);box-shadow:0 0 4px rgba(0,0,0,.55)"></div>
+        <div id="cdCrosshairV" style="position:absolute;top:0;width:1px;height:100vh;background:rgba(255,208,96,.42);box-shadow:0 0 4px rgba(0,0,0,.55)"></div>
+      `;
+      document.body.appendChild(el);
+      if (!crosshairListenersBound) {
+        crosshairListenersBound = true;
+        window.addEventListener('resize', updateCenterCrosshairViewport);
+        window.addEventListener('orientationchange', updateCenterCrosshairViewport);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', updateCenterCrosshairViewport);
+          window.visualViewport.addEventListener('scroll', updateCenterCrosshairViewport);
+        }
+      }
+    }
+    updateCenterCrosshairViewport();
+  }
+
+  function updateCenterCrosshairViewport() {
+    const el = document.getElementById('cdCenterCrosshair');
+    if (!el) return;
+    const liveMap = getMap();
+    const container = liveMap && typeof liveMap.getContainer === 'function'
+      ? liveMap.getContainer()
+      : null;
+    const rect = container && container.isConnected
+      ? container.getBoundingClientRect()
+      : null;
+    let projected = null;
+    try {
+      if (liveMap && typeof liveMap.getCenter === 'function' && typeof liveMap.project === 'function')
+        projected = liveMap.project(liveMap.getCenter());
+    } catch (_) {}
+    const cx = rect && rect.width
+      ? rect.left + (projected && Number.isFinite(projected.x) ? projected.x : rect.width / 2)
+      : window.innerWidth / 2;
+    const cy = rect && rect.height
+      ? rect.top + (projected && Number.isFinite(projected.y) ? projected.y : rect.height / 2)
+      : window.innerHeight / 2;
+    el.style.setProperty('--cd-crosshair-x', `${cx}px`);
+    el.style.setProperty('--cd-crosshair-y', `${cy}px`);
+    const horizontal = document.getElementById('cdCrosshairH');
+    const vertical = document.getElementById('cdCrosshairV');
+    if (horizontal) horizontal.style.top = `${cy}px`;
+    if (vertical) vertical.style.left = `${cx}px`;
   }
 
   function sendCmd(obj) {
@@ -693,8 +996,8 @@
         'transition:opacity .3s;opacity:0;white-space:nowrap';
       document.body.appendChild(toast);
     }
-    const action = found ? 'marcado' : 'desmarcado';
-    toast.textContent = 'Location #' + locationId + ' ' + action + ' em outro cliente';
+    const action = _t(found ? 'sync.marked' : 'sync.unmarked');
+    toast.textContent = _t('sync.location_toast').replace('{0}', locationId).replace('{1}', action);
     toast.style.opacity = '1';
     clearTimeout(toast._t);
     toast._t = setTimeout(() => { toast.style.opacity = '0'; }, 4000);
@@ -714,6 +1017,7 @@
   // Threshold em coordenadas lng/lat do Mapbox — ajustar conforme necessário.
   // O mapa usa valores aprox. entre -1 e 1; 0.005 equivale a uma área pequena.
   const NEARBY_REFRESH_MS = 500;
+  let _nearbyInlineRefreshTimer = null;
   let _catCache = null;
   let _locCache = null;
   function _getCategoryName(id) {
@@ -746,6 +1050,19 @@
     try {
       localStorage.setItem(NEARBY_RESPECT_MAP_VISIBILITY_KEY, enabled ? '1' : '0');
     } catch (_) {}
+    return enabled;
+  }
+  function _nearbyStayInList() {
+    try {
+      const saved = localStorage.getItem(NEARBY_STAY_IN_LIST_KEY);
+      if (saved === '1') return true;
+      if (saved === '0') return false;
+    } catch (_) {}
+    return false;
+  }
+  function _setNearbyStayInList(value) {
+    const enabled = !!value;
+    try { localStorage.setItem(NEARBY_STAY_IN_LIST_KEY, enabled ? '1' : '0'); } catch (_) {}
     return enabled;
   }
   function _isMapGenieCategoryVisible(categoryId) {
@@ -893,15 +1210,57 @@
   }
 
   function nearbyControlsEnabled() {
+    if (window.__cdSettings && window.__cdSettings.nearbyControlsEnabled === true)
+      return true;
+    try {
+      const saved = localStorage.getItem('cd-nearby-enabled');
+      if (saved === '0') return false;
+      if (saved === '1') return true;
+    } catch (_) {}
     return !!(window.__cdSettings && window.__cdSettings.nearbyControlsEnabled);
   }
 
+  function setNearbyControlsEnabled(value) {
+    const enabled = !!value;
+    if (!window.__cdSettings) window.__cdSettings = {};
+    window.__cdSettings.nearbyControlsEnabled = enabled;
+    try { localStorage.setItem('cd-nearby-enabled', enabled ? '1' : '0'); } catch (_) {}
+    window.__cdUpdateNearbyControls();
+    return enabled;
+  }
+
+  function ensureNearbyToggleBtn() {
+    if (document.getElementById('cdNearbyToggle')) return;
+    const button = document.createElement('button');
+    button.id = 'cdNearbyToggle';
+    button.title = 'Nearby locations (Shift+N)';
+    button.textContent = '📍';
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:388px' : 'left:100px';
+    button.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
+      width:36px;height:36px;border-radius:50%;display:flex;align-items:center;
+      justify-content:center;background:rgba(12,12,18,.9);
+      border:1px solid rgba(255,96,150,.45);color:#ff6096;font:16px 'Segoe UI';
+      cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.5);backdrop-filter:blur(4px)`;
+    button.addEventListener('click', openNearbyPopup);
+    document.body.appendChild(button);
+    button.style.display = nearbyControlsEnabled() ? 'flex' : 'none';
+  }
+
   window.__cdUpdateNearbyControls = function() {
+    const toggle = document.getElementById('cdNearbyToggle');
+    if (toggle) toggle.style.display = nearbyControlsEnabled() ? 'flex' : 'none';
     updateNearbyCircle();
     if (nearbyControlsEnabled()) return;
     const popup = nearbyPopup;
     nearbyPopup = null;
     nearbyInputHandler = null;
+    const inlinePanel = document.getElementById('cdNearbyPanel');
+    if (inlinePanel) inlinePanel.style.display = 'none';
+    if (_nearbyInlineRefreshTimer) {
+      clearInterval(_nearbyInlineRefreshTimer);
+      _nearbyInlineRefreshTimer = null;
+    }
     clearNearbySelection(true);
     try { if (popup && !popup.closed) popup.close(); } catch (_) {}
   };
@@ -963,6 +1322,102 @@
     } catch (_) { return []; }
   }
 
+  // WebView2 cannot safely use the old window.open()-based nearby window:
+  // Edge forwards its empty about:blank navigation to Windows.  Full mode
+  // therefore uses a compact panel inside the map window.
+  function _toggleNearbyInlinePanel() {
+    let panel = document.getElementById('cdNearbyPanel');
+    if (panel) {
+      const visible = panel.style.display !== 'none';
+      panel.style.display = visible ? 'none' : 'flex';
+      if (visible) {
+        clearNearbySelection(true);
+        if (_nearbyInlineRefreshTimer) {
+          clearInterval(_nearbyInlineRefreshTimer);
+          _nearbyInlineRefreshTimer = null;
+        }
+      } else {
+        _renderNearbyInlinePanel();
+        _startNearbyInlineRefresh();
+      }
+      return;
+    }
+
+    panel = document.createElement('div');
+    panel.id = 'cdNearbyPanel';
+    const panelPosition = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    panel.style.cssText = `position:fixed;bottom:56px;${panelPosition};z-index:10001;
+      width:300px;max-height:480px;display:flex;flex-direction:column;gap:8px;
+      padding:10px 12px;background:rgba(12,12,18,.94);color:#e8e8e8;
+      border:1px solid rgba(255,208,96,.3);border-radius:7px;
+      box-shadow:0 4px 18px rgba(0,0,0,.55);font:12px/1.4 'Segoe UI',system-ui,sans-serif`;
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px">
+        <strong style="color:#ffd060;flex:1">📍 Nearby</strong>
+        <button id="cdNearbyClose" title="Close" style="background:transparent;border:0;color:#aaa;font:18px Segoe UI;cursor:pointer">×</button>
+      </div>
+      <div id="cdNearbyList" style="display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:400px"></div>`;
+    document.body.appendChild(panel);
+    document.getElementById('cdNearbyClose').addEventListener('click', () => {
+      panel.style.display = 'none';
+      clearNearbySelection(true);
+      if (_nearbyInlineRefreshTimer) {
+        clearInterval(_nearbyInlineRefreshTimer);
+        _nearbyInlineRefreshTimer = null;
+      }
+    });
+    _renderNearbyInlinePanel();
+    _startNearbyInlineRefresh();
+  }
+
+  function _startNearbyInlineRefresh() {
+    if (_nearbyInlineRefreshTimer) clearInterval(_nearbyInlineRefreshTimer);
+    _nearbyInlineRefreshTimer = setInterval(() => {
+      const panel = document.getElementById('cdNearbyPanel');
+      if (!panel || panel.style.display === 'none') return;
+      _renderNearbyInlinePanel();
+    }, NEARBY_REFRESH_MS);
+  }
+
+  function _renderNearbyInlinePanel() {
+    const list = document.getElementById('cdNearbyList');
+    if (!list) return;
+    const items = getNearbyLocations();
+    if (!items.length) {
+      list.innerHTML = '<div style="color:#999;padding:8px 0">No nearby locations found.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:7px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:5px;color:#ddd;padding:7px 8px';
+      const category = item.category?.title ? ` · ${item.category.title}` : '';
+      const info = document.createElement('button');
+      info.type = 'button';
+      info.style.cssText = 'min-width:0;flex:1;text-align:left;background:transparent;border:0;color:#ddd;padding:0;cursor:pointer';
+      info.innerHTML = `<span style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_escapeHtml(item.title)}</span><small style="color:#999">${(item.dist * 1000).toFixed(1)}${category}</small>`;
+      info.addEventListener('click', () => updateNearbySelection(item, true));
+      const teleport = document.createElement('button');
+      teleport.type = 'button';
+      teleport.textContent = '⌖';
+      teleport.title = 'Teleport';
+      teleport.style.cssText = 'flex-shrink:0;background:rgba(100,160,255,.15);border:1px solid rgba(100,160,255,.45);border-radius:4px;color:#80b4ff;width:30px;height:29px;padding:0;cursor:pointer;font:16px Segoe UI';
+      teleport.addEventListener('click', () => {
+        if (!ws || ws.readyState !== 1) {
+          setStatus('Server offline', '#e07070', 3500);
+          return;
+        }
+        const realm = (lastPos && lastPos.realm) || 'pywel';
+        sendCmd({ cmd: 'teleport_map', lng: item.lng, lat: item.lat,
+          y: getCenterTeleportY(), realm });
+      });
+      row.appendChild(info);
+      row.appendChild(teleport);
+      list.appendChild(row);
+    });
+  }
+
   // Exposto globalmente para que o popup possa chamar mesmo sem window.opener funcionar
   window.__cdToggleLocation = function(locationId, found) {
     const csrf = document.head.querySelector('meta[name="csrf-token"]')?.content || '';
@@ -979,6 +1434,10 @@
 
   function openNearbyPopup() {
     if (!nearbyControlsEnabled()) return;
+    if (window.__cdWebView2) {
+      _toggleNearbyInlinePanel();
+      return;
+    }
     if (isNearbyPopupOpen()) {
       closeNearbyPopup();
       return;
@@ -1003,7 +1462,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Nearby Locations</title>
+  <title>${_t('nearby.window_title')}</title>
   ${_iconCssHref ? `<link rel="stylesheet" href="${_iconCssHref}">` : ''}
   <style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;
@@ -1072,29 +1531,30 @@
 <body tabindex="0">
   <div class="wrap">
     <div class="header">
-      <div class="header-title">📍 Nearby</div>
+      <div class="header-title">${_t('nearby.title')}</div>
       <div class="header-count" id="hcount"></div>
-      <button class="header-toggle" id="mapFilterToggle" title="Respect the categories currently visible on the map">Map filters</button>
+      <button class="header-toggle" id="mapFilterToggle" title="${_t('nearby.map_filters_title_off')}">Map filters</button>
+      <button class="header-toggle" id="stayInListToggle" title="${_t('nearby.stay_in_list_title_off')}">Stay in list</button>
     </div>
     <div class="content">
       <div class="lists">
         <div class="list-pane" id="notfoundPane">
-          <div class="list-head"><span>Not found</span><span class="list-count" id="notfoundCount"></span></div>
+          <div class="list-head"><span>${_t('nearby.not_found_header')}</span><span class="list-count" id="notfoundCount"></span></div>
           <div class="list" id="notfoundList"></div>
         </div>
         <div class="list-pane" id="foundPane">
-          <div class="list-head"><span>Found</span><span class="list-count" id="foundCount"></span></div>
+          <div class="list-head"><span>${_t('nearby.found_header')}</span><span class="list-count" id="foundCount"></span></div>
           <div class="list" id="foundList"></div>
         </div>
       </div>
       <div class="details" id="details"></div>
     </div>
     <div class="footer">
-      <span style="margin-right: 5px"><b>Left/Right</b> List</span>
-      <span style="margin-right: 5px"><b>Up/Down, W/S, D-pad</b> Navigate</span>
-      <span style="margin-right: 5px"><b>Enter, Space, A</b> Mark</span>
-      <span style="margin-right: 5px"><b>Select/View</b> Filters</span>
-      <span><b>Esc, B</b> Close</span>
+      <span style="margin-right: 5px"><b>${_t('nearby.footer_list')}</b> ${_t('nearby.footer_list_label')}</span>
+      <span style="margin-right: 5px"><b>${_t('nearby.footer_navigate')}</b> ${_t('nearby.footer_navigate_label')}</span>
+      <span style="margin-right: 5px"><b>${_t('nearby.footer_mark')}</b> ${_t('nearby.footer_mark_label')}</span>
+      <span style="margin-right: 5px"><b>${_t('nearby.footer_filters')}</b> ${_t('nearby.footer_filters_label')}</span>
+      <span><b>${_t('nearby.footer_close')}</b> ${_t('nearby.footer_close_label')}</span>
     </div>
   </div>
   <script>
@@ -1111,10 +1571,20 @@
       if (!btn) return;
       const enabled = _nearbyRespectMapVisibility();
       btn.className = `header-toggle ${enabled ? 'on' : 'off'}`;
-      btn.textContent = enabled ? 'Map filters ON' : 'Map filters OFF';
+      btn.textContent = enabled ? _t('nearby.map_filters_on') : _t('nearby.map_filters_off');
       btn.title = enabled
-        ? 'Nearby follows the categories currently visible on the map'
-        : 'Nearby shows all categories, ignoring map category visibility';
+        ? _t('nearby.map_filters_title_on')
+        : _t('nearby.map_filters_title_off');
+    }
+    function syncStayInListToggle() {
+      const btn = doc.getElementById('stayInListToggle');
+      if (!btn) return;
+      const enabled = _nearbyStayInList();
+      btn.className = `header-toggle ${enabled ? 'on' : 'off'}`;
+      btn.textContent = enabled ? _t('nearby.stay_in_list_on') : _t('nearby.stay_in_list_off');
+      btn.title = enabled
+        ? _t('nearby.stay_in_list_title_on')
+        : _t('nearby.stay_in_list_title_off');
     }
 
     function toggleMapFilterMode() {
@@ -1134,7 +1604,9 @@
         clearNearbySelection(false);
         return;
       }
-      if (hcount) hcount.textContent = `${items.length} location${items.length !== 1 ? 's' : ''}`;
+      if (hcount) hcount.textContent = items.length === 1
+        ? _t('nearby.count_single').replace('{0}', items.length)
+        : _t('nearby.count_plural').replace('{0}', items.length);
       syncMapFilterToggle();
 
       // Fingerprint: skip render se ids, found e seleção não mudaram
@@ -1272,7 +1744,7 @@
     function renderList(list, group) {
       if (!list) return;
       if (!group.length) {
-        list.innerHTML = '<div class="empty small">No locations</div>';
+        list.innerHTML = `<div class="empty small">${_t('nearby.empty_small')}</div>`;
         return;
       }
 
@@ -1328,18 +1800,21 @@
       if (!notfoundList || !foundList) return;
 
       syncMapFilterToggle();
+      syncStayInListToggle();
       ensureNearbySelection();
       const notfoundItems = nearbyGroup(false);
       const foundItems = nearbyGroup(true);
-      if (hcount) hcount.textContent = `${items.length} location${items.length !== 1 ? 's' : ''}`;
+      if (hcount) hcount.textContent = items.length === 1
+        ? _t('nearby.count_single').replace('{0}', items.length)
+        : _t('nearby.count_plural').replace('{0}', items.length);
       if (notfoundCount) notfoundCount.textContent = String(notfoundItems.length);
       if (foundCount) foundCount.textContent = String(foundItems.length);
       if (notfoundPane) notfoundPane.classList.toggle('active', !activeFoundList);
       if (foundPane) foundPane.classList.toggle('active', activeFoundList);
 
       if (items.length === 0) {
-        notfoundList.innerHTML = '<div class="empty small">No location nearby</div>';
-        foundList.innerHTML = '<div class="empty small">No location nearby</div>';
+        notfoundList.innerHTML = `<div class="empty small">${_t('nearby.empty_small')}</div>`;
+        foundList.innerHTML = `<div class="empty small">${_t('nearby.empty_small')}</div>`;
         if (hcount) hcount.textContent = '';
         renderDetails(null);
         clearNearbySelection(false);
@@ -1377,7 +1852,7 @@
       if (!item) {
         lastDetailsId = null;
         lastDetailsFound = null;
-        detailEl.innerHTML = '<div class="details-empty">Select a nearby location</div>';
+        detailEl.innerHTML = `<div class="details-empty">${_t('nearby.select_prompt')}</div>`;
         return;
       }
       if (lastDetailsId === item.id && lastDetailsFound === item.found) return;
@@ -1443,19 +1918,52 @@
       });
     }
 
+    const stayInListToggle = doc.getElementById('stayInListToggle');
+    if (stayInListToggle) {
+      stayInListToggle.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        _setNearbyStayInList(!_nearbyStayInList());
+        syncStayInListToggle();
+      });
+      stayInListToggle.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          _setNearbyStayInList(!_nearbyStayInList());
+          syncStayInListToggle();
+        }
+      });
+    }
+
     function doToggle() {
       if (!items.length) return;
       const item = items[selectedIndex];
+      const originalList = activeFoundList;
+      const originalGroupIndex = Math.max(0, selectedGroupIndex());
+
       item.found = !item.found;
       setUserLocationFound(item.id, item.found);
-      // Delega ao mapManager: atualiza UI, faz o fetch interno e o nosso patch intercepta
-      // (sem _replayingToggle = true, então o broadcast é disparado normalmente)
       if (typeof window.mapManager?.markLocationAsFound === 'function') {
         window.mapManager.markLocationAsFound(parseInt(item.id, 10), item.found);
       }
       items.sort(_sortNearbyItems);
-      selectedIndex = items.findIndex(nextItem => nextItem.id === item.id);
-      activeFoundList = !!item.found;
+
+      if (_nearbyStayInList()) {
+        const remaining = nearbyGroup(originalList);
+        if (remaining.length > 0) {
+          const nextGroupIndex = Math.min(originalGroupIndex, remaining.length - 1);
+          selectNearbyGroupIndex(originalList, nextGroupIndex, true);
+        } else {
+          const otherList = !originalList;
+          if (nearbyGroup(otherList).length > 0) {
+            selectNearbyGroupIndex(otherList, 0, true);
+          }
+        }
+      } else {
+        selectedIndex = items.findIndex(nextItem => nextItem.id === item.id);
+        activeFoundList = !!item.found;
+      }
       render();
     }
 
@@ -1497,10 +2005,10 @@
       } else if (e.key === 'ArrowUp' || e.key.toLowerCase() === 'w') {
         e.preventDefault();
         moveNearbyVertical(-1);
-      } else if (e.key === 'ArrowLeft') {
+      } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'a') {
         e.preventDefault();
         moveNearbyHorizontal(-1);
-      } else if (e.key === 'ArrowRight') {
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') {
         e.preventDefault();
         moveNearbyHorizontal(1);
       } else if (e.key === 'Enter' || e.key === ' ') {
@@ -1524,6 +2032,7 @@
 
     render();
     syncMapFilterToggle();
+    syncStayInListToggle();
     syncSelectedNearby(true);
     updateNearbyCircle();
     // Delay para Qt processar a criação da janela antes de focar
@@ -1545,8 +2054,9 @@
     if (marker) marker.setLngLat([msg.lng, msg.lat]);
     updateNearbyCircle();
     const mm = window.mapManager && window.mapManager.map;
-    if (rotateWithCamera) {
-      // camera_heading controla bearing e centro nesse modo.
+    if (rotateWithCamera && following && !shiftHeld && !nearbySelectionActive && mm) {
+      // Centraliza no player a cada posição; bearing vem do último camera_heading.
+      liveEaseTo(mm, { center: [msg.lng, msg.lat], bearing: lastCameraHeading });
     } else if (following && !shiftHeld && !nearbySelectionActive && rotateWithPlayer && mm) {
       liveEaseTo(mm, { center: [msg.lng, msg.lat], bearing: lastHeading });
     } else if (following && !shiftHeld && !nearbySelectionActive) {
@@ -1626,7 +2136,7 @@
           if (msg.ok) {
             hasPreTeleport = true; updatePanel();
           } else {
-            setStatus(msg.err || 'No map marker set', '#e07070', 3000);
+            setStatus(msg.err || _t('teleport.no_marker'), '#e07070', 3000);
           }
 
         } else if (msg.type === 'teleport_map_result') {
@@ -1636,7 +2146,7 @@
             updatePanel();
           } else {
             hasPreTeleport = false; updatePanel();
-            setStatus(msg.err || 'Map teleport failed', '#e07070', 3000);
+            setStatus(msg.err || _t('teleport.map_failed'), '#e07070', 3000);
           }
 
         } else if (msg.type === 'crosshair_target_result') {
@@ -1645,6 +2155,17 @@
           } else {
             setStatus(msg.err || 'Could not set F5 target', '#e07070', 3000);
           }
+
+        } else if (msg.type === 'hotkeys_saved') {
+          setStatus(msg.ok ? 'Hotkeys saved' : (msg.err || 'Could not save hotkeys'),
+            msg.ok ? '#60e890' : '#e07070', 3500);
+
+        } else if (msg.type === 'calibration_result') {
+          const text = msg.ok
+            ? (msg.reset ? 'Calibration reset.' : `Calibration saved (${msg.count || 1} point${msg.count === 1 ? '' : 's'}).`)
+            : (msg.err || 'Calibration failed.');
+          _setFullSettingsStatus(text, !!msg.ok);
+          setStatus(text, msg.ok ? '#60e890' : '#e07070', 4000);
 
         } else if (msg.type === 'location_toggle') {
           if (msg.sourceClientId && msg.sourceClientId === CLIENT_ID) return;
@@ -1655,6 +2176,12 @@
 
         } else if (msg.type === 'nearby_input') {
           if (nearbyControlsEnabled() && nearbyInputHandler) nearbyInputHandler(msg.action);
+
+        } else if (msg.type === 'open_waypoints') {
+          toggleWaypointPanelFromHotkey();
+
+        } else if (msg.type === 'waypoint_input_wp') {
+          waypointNavInput(msg.action);
 
         } else if (msg.type === 'pan_location') {
           panToLocationId(msg.locationId);
@@ -1680,13 +2207,18 @@
   };
 
   // ── Botão flutuante para abrir/fechar waypoints ───────────────────
+  let _wpNavIndex = -1;       // indice selecionado na lista; -1 = nenhum
+  let _wpPendingFocusLast = false;  // apos save bem-sucedido, focar ultimo item
+
   function ensureWpToggleBtn() {
     if (document.getElementById('cdWpToggle')) return;
     const btn = document.createElement('button');
     btn.id = 'cdWpToggle';
-    btn.title = 'Waypoints  (abrir/fechar)';
+    btn.title = _t('waypoints.btn_title');
     btn.textContent = '⭕';
-    btn.style.cssText = `position:fixed;bottom:12px;left:12px;z-index:10000;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    btn.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
       width:36px;height:36px;border-radius:50%;
       background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);
       color:#ffd060;font:16px 'Segoe UI';cursor:pointer;
@@ -1702,7 +2234,6 @@
       btn.style.borderColor = 'rgba(255,208,96,.35)';
     });
     btn.addEventListener('click', () => {
-      if (ensureWaypointPopup()) return;
       const panel = document.getElementById('cdWpPanel');
       if (!panel) { ensureWaypointPanel(); return; }
       const visible = panel.style.display !== 'none';
@@ -1715,9 +2246,11 @@
     if (document.getElementById('cdCenterTp')) return;
     const btn = document.createElement('button');
     btn.id = 'cdCenterTp';
-    btn.title = 'Abrir teleporte para o centro da tela';
+    btn.title = _t('waypoints.center_btn_title');
     btn.textContent = '◎';
-    btn.style.cssText = `position:fixed;bottom:12px;left:56px;z-index:10000;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:344px' : 'left:56px';
+    btn.style.cssText = `position:fixed;bottom:12px;${position};z-index:10000;
       width:36px;height:36px;border-radius:50%;
       background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);
       color:#80b4ff;font:18px 'Segoe UI';cursor:pointer;
@@ -1745,7 +2278,9 @@
     if (document.getElementById('cdCenterTpPanel')) return;
     const el = document.createElement('div');
     el.id = 'cdCenterTpPanel';
-    el.style.cssText = `position:fixed;bottom:56px;left:56px;z-index:9999;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:344px' : 'left:56px';
+    el.style.cssText = `position:fixed;bottom:56px;${position};z-index:9999;
       background:rgba(12,12,18,.92);color:#e8e8e8;
       font:12px/1.5 'Segoe UI',system-ui,sans-serif;
       border:1px solid rgba(100,160,255,.3);border-radius:7px;
@@ -1754,19 +2289,19 @@
       display:none;flex-direction:column;gap:7px;overflow:hidden`;
     el.innerHTML = `
       <div style="display:flex;align-items:center;gap:6px">
-        <span style="color:#80b4ff;font-weight:600;flex:1;font-size:12px">Centro da tela</span>
+        <span style="color:#80b4ff;font-weight:600;flex:1;font-size:12px">${_t('waypoints.center_title')}</span>
       </div>
       <div style="display:flex;align-items:center;gap:7px">
         <span style="color:#bbb;font-size:11px;white-space:nowrap">Y <span id="cdCenterPanelYVal">${Math.round(getCenterTeleportY())}</span></span>
-        <input type="range" id="cdCenterPanelY" min="-5000" max="5000" step="10"
+        <input type="range" id="cdCenterPanelY" min="0" max="5000" step="5"
           value="${getCenterTeleportY()}"
           style="flex:1;min-width:110px;accent-color:#80b4ff;cursor:pointer">
       </div>
-      <button id="cdCenterPanelTp" title="Teleportar para o centro da tela"
+      <button id="cdCenterPanelTp" title="${_t('waypoints.teleport_title')}"
         style="background:rgba(100,160,255,.14);border:1px solid rgba(100,160,255,.45);
         color:#80b4ff;font:11px 'Segoe UI';padding:4px 8px;border-radius:4px;
         cursor:pointer;width:100%">
-        Teleportar
+        ${_t('waypoints.teleport_btn')}
       </button>
     `;
     document.body.appendChild(el);
@@ -1784,6 +2319,132 @@
     return null;
   }
 
+  function _triggerWpSave(doc) {
+    // Usar o prompt do contexto do popup para que o foco volte para ele automaticamente
+    const promptFn = (doc && doc.defaultView && doc.defaultView.prompt)
+      ? doc.defaultView.prompt.bind(doc.defaultView)
+      : prompt;
+    const name = promptFn(_t('waypoints.prompt_name'), lastPos
+      ? (lastPos.realm === 'abyss'
+          ? _t('waypoints.default_name_abyss').replace('{0}', Math.round(lastPos.x)).replace('{1}', Math.round(lastPos.z))
+          : _t('waypoints.default_name').replace('{0}', Math.round(lastPos.x)).replace('{1}', Math.round(lastPos.z)))
+      : 'Waypoint');
+    if (name !== null) {
+      _wpPendingFocusLast = true;
+      sendCmd({ cmd: 'save_waypoint', name });
+    } else {
+      // cancelou — foca a lista dentro do popup
+      if (doc) {
+        const list = doc.getElementById('cdWpPopupList');
+        if (list) {
+          list.setAttribute('tabindex', '-1');
+          list.focus();
+        }
+      }
+    }
+  }
+
+  function _wpFocusSaveBtn(doc) {
+    const btn = doc.getElementById('cdWpPopupSave');
+    if (!btn) return;
+    btn.style.borderColor = 'rgba(255,208,96,.9)';
+    btn.style.boxShadow   = '0 0 0 2px rgba(255,208,96,.35)';
+    btn.focus();
+    btn.addEventListener('blur', () => {
+      btn.style.borderColor = '';
+      btn.style.boxShadow   = '';
+    }, { once: true });
+  }
+
+  function _wpClearSaveBtnFocus(doc) {
+    const btn = doc.getElementById('cdWpPopupSave');
+    if (!btn) return;
+    btn.style.borderColor = '';
+    btn.style.boxShadow   = '';
+  }
+
+  function _bindWaypointKeyboard(doc) {
+    const getList = () => doc.getElementById('cdWpPopupList');
+    const getSave = () => doc.getElementById('cdWpPopupSave');
+    const getFilter = () => doc.getElementById('cdWpPopupFilter');
+
+    doc.addEventListener('keydown', (e) => {
+      const filterFocused = doc.activeElement === getFilter();
+      const saveFocused   = doc.activeElement === getSave();
+
+      if (e.ctrlKey && e.key === 'n') {
+        e.preventDefault();
+        _triggerWpSave(doc);
+        return;
+      }
+      if (e.ctrlKey && e.key === 'f') {
+        e.preventDefault();
+        getFilter()?.focus();
+        return;
+      }
+
+      if (filterFocused) {
+        const list = getList();
+        const rows = list ? list.querySelectorAll('[data-tp]') : [];
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (rows.length > 0) {
+            getFilter().blur();
+            _wpNavIndex = 0;
+            _wpApplyHighlight(list);
+          }
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          getFilter().blur();
+          _wpFocusSaveBtn(doc);
+        }
+        return;
+      }
+
+      if (saveFocused) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          _triggerWpSave(doc);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          _wpClearSaveBtnFocus(doc);
+          getSave().blur();
+          _wpNavIndex = -1;
+        } else if (e.key === 'Escape') {
+          _wpClearSaveBtnFocus(doc);
+          getSave().blur();
+        }
+        return;
+      }
+
+      const list = getList();
+      const rows = list ? list.querySelectorAll('[data-tp]') : [];
+      const count = rows.length;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (_wpNavIndex <= 0) {
+          _wpNavIndex = -1;
+          _wpApplyHighlight(list);
+          _wpFocusSaveBtn(doc);
+        } else {
+          _wpNavIndex--;
+          _wpApplyHighlight(list);
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        _wpNavIndex = count === 0 ? -1 : (_wpNavIndex >= count - 1 ? count - 1 : _wpNavIndex + 1);
+        _wpApplyHighlight(list);
+      } else if ((e.key === 'Enter' || e.key === ' ') && _wpNavIndex >= 0 && _wpNavIndex < count) {
+        e.preventDefault();
+        rows[_wpNavIndex].click();
+      } else if (e.key === 'Delete' && _wpNavIndex >= 0 && _wpNavIndex < count) {
+        e.preventDefault();
+        rows[_wpNavIndex].closest('div')?.querySelector('[data-del]')?.click();
+      }
+    });
+  }
+
   function bindWaypointPopupControls(doc) {
     const save = doc.getElementById('cdWpPopupSave');
     const filter = doc.getElementById('cdWpPopupFilter');
@@ -1791,12 +2452,8 @@
       filter.value = waypointFilter;
       filter.addEventListener('input', () => setWaypointFilter(filter.value));
     }
-    if (save) save.addEventListener('click', () => {
-      const name = prompt('Nome do waypoint:', lastPos
-        ? `${lastPos.realm === 'abyss' ? '[Abyss] ' : ''}${Math.round(lastPos.x)}, ${Math.round(lastPos.z)}`
-        : 'Waypoint');
-      if (name !== null) sendCmd({ cmd: 'save_waypoint', name });
-    });
+    if (save) save.addEventListener('click', () => _triggerWpSave(doc));
+    _bindWaypointKeyboard(doc);
   }
 
   function ensureWaypointPopup() {
@@ -1825,7 +2482,7 @@
         <html>
         <head>
           <meta charset="utf-8">
-          <title>CD Waypoints</title>
+          <title>${_t('waypoints.window_title')}</title>
           <style>
             html,body{
               margin:0;width:100%;height:100%;overflow:hidden;
@@ -1853,6 +2510,7 @@
               color:#e8e8e8;padding:5px 8px;outline:none;
             }
             .filter:focus{border-color:rgba(255,208,96,.45)}
+            .btn:focus{outline:none}
             .btn{
               border-radius:4px;cursor:pointer;padding:3px 8px;
               background:rgba(255,208,96,.13);
@@ -1868,10 +2526,10 @@
         <body>
           <div class="wrap">
             <div class="row">
-              <div class="title">Waypoints</div>
-              <button id="cdWpPopupSave" class="btn">+ Salvar</button>
+              <div class="title">${_t('waypoints.title')}</div>
+              <button id="cdWpPopupSave" class="btn">${_t('waypoints.save')}</button>
             </div>
-            <input id="cdWpPopupFilter" class="filter" placeholder="Filtrar waypoints">
+            <input id="cdWpPopupFilter" class="filter" placeholder="${_t('waypoints.filter_placeholder')}">
             <div id="cdWpPopupList" class="list"></div>
           </div>
         </body>
@@ -1892,34 +2550,38 @@
     if (document.getElementById('cdWpPanel')) return;
     const el = document.createElement('div');
     el.id = 'cdWpPanel';
-    el.style.cssText = `position:fixed;bottom:56px;left:12px;z-index:9999;
+    const position = window.__cdMapProvider === 'greymane'
+      ? 'left:300px' : 'left:12px';
+    el.style.cssText = `position:fixed;bottom:56px;${position};z-index:9999;
       background:rgba(12,12,18,.92);color:#e8e8e8;
-      font:12px/1.5 'Segoe UI',system-ui,sans-serif;
+      font:13px/1.5 'Segoe UI',system-ui,sans-serif;
       border:1px solid rgba(255,208,96,.25);border-radius:7px;
-      padding:8px 10px;width:224px;max-height:520px;
+      padding:10px 12px;width:260px;max-height:560px;
       backdrop-filter:blur(5px);box-shadow:0 4px 18px rgba(0,0,0,.5);
-      display:none;flex-direction:column;gap:5px;overflow:hidden;`;
+      display:none;flex-direction:column;gap:8px;overflow:hidden;`;
     el.innerHTML = `
-      <div style="display:flex;align-items:center;gap:6px">
-        <span style="color:#ffd060;font-weight:600;flex:1;font-size:12px">⭕ Waypoints</span>
-        <button id="cdWpSave" title="Save current position"
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="color:#ffd060;font-weight:600;flex:1;font-size:13px">⭕ ${_t('waypoints.title')}</span>
+        <button id="cdWpSave" title="${_t('waypoints.save_btn_title')}"
           style="background:rgba(255,208,96,.15);border:1px solid rgba(255,208,96,.4);
-          color:#ffd060;font:11px 'Segoe UI';padding:2px 8px;border-radius:4px;cursor:pointer">
-          + Salvar
+          color:#ffd060;font:13px 'Segoe UI';padding:6px 14px;border-radius:5px;cursor:pointer">
+          ${_t('waypoints.save')}
         </button>
       </div>
-      <input id="cdWpFilter" placeholder="Filtrar waypoints"
+      <input id="cdWpFilter" placeholder="${_t('waypoints.filter_placeholder')}"
         style="width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
-        color:#e8e8e8;font:11px 'Segoe UI';padding:4px 7px;border-radius:4px;outline:none">
-      <div id="cdWpList" style="overflow-y:auto;max-height:170px;display:flex;
-        flex-direction:column;gap:3px;flex-shrink:0"></div>
+        color:#e8e8e8;font:13px 'Segoe UI';padding:8px 10px;border-radius:5px;outline:none">
+      <div id="cdWpList" style="overflow-y:auto;max-height:220px;display:flex;
+        flex-direction:column;gap:6px;flex-shrink:0"></div>
     `;
     document.body.appendChild(el);
 
     document.getElementById('cdWpFilter').addEventListener('input', (e) => setWaypointFilter(e.target.value));
     document.getElementById('cdWpSave').addEventListener('click', () => {
-      const name = prompt('Nome do waypoint:', lastPos
-        ? `${lastPos.realm === 'abyss' ? '[Abyss] ' : ''}${Math.round(lastPos.x)}, ${Math.round(lastPos.z)}`
+      const name = prompt(_t('waypoints.prompt_name'), lastPos
+        ? (lastPos.realm === 'abyss'
+            ? _t('waypoints.default_name_abyss').replace('{0}', Math.round(lastPos.x)).replace('{1}', Math.round(lastPos.z))
+            : _t('waypoints.default_name').replace('{0}', Math.round(lastPos.x)).replace('{1}', Math.round(lastPos.z)))
         : 'Waypoint');
       if (name !== null) sendCmd({ cmd: 'save_waypoint', name });
     });
@@ -1945,11 +2607,21 @@
     return text.includes(waypointFilter);
   }
 
+  function _wpApplyHighlight(list) {
+    if (!list) return;
+    const rows = list.querySelectorAll('[data-tp]');
+    rows.forEach((btn, i) => {
+      const row = btn.closest('div');
+      if (row) row.style.background = i === _wpNavIndex
+        ? 'rgba(255,208,96,.18)' : 'rgba(255,255,255,.04)';
+    });
+  }
+
   function renderWaypointList(list) {
     if (!list) return;
     if (waypoints.length === 0) {
       list.innerHTML = `<div style="color:#555;font-size:11px;text-align:center;padding:4px 0">
-        Nenhum waypoint salvo</div>`;
+        ${_t('waypoints.empty')}</div>`;
       return;
     }
     const items = waypoints
@@ -1957,21 +2629,23 @@
       .filter(item => matchesWaypointFilter(item.wp));
     if (items.length === 0) {
       list.innerHTML = `<div style="color:#555;font-size:11px;text-align:center;padding:4px 0">
-        Nenhum waypoint encontrado</div>`;
+        ${_t('waypoints.not_found')}</div>`;
       return;
     }
     list.innerHTML = items.map(({ wp, i }) => `
-      <div style="display:flex;align-items:center;gap:4px;background:rgba(255,255,255,.04);
-        border-radius:4px;padding:3px 6px;">
-        <span style="flex:1;font-size:11px;white-space:nowrap;overflow:hidden;
+      <div style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.04);
+        border-radius:5px;padding:8px 10px;min-height:44px;">
+        <span style="flex:1;font-size:13px;white-space:nowrap;overflow:hidden;
           text-overflow:ellipsis;color:#ccc" title="${wp.name}">${wp.name}</span>
-        <button data-tp="${i}" title="Teleportar"
+        <button data-tp="${i}" title="${_t('waypoints.teleport_title')}"
           style="background:rgba(255,208,96,.15);border:1px solid rgba(255,208,96,.35);
-          color:#ffd060;font:10px 'Segoe UI';padding:1px 5px;border-radius:3px;
-          cursor:pointer;flex-shrink:0">⭕</button>
-        <button data-del="${i}" title="Remover"
-          style="background:transparent;border:none;color:#555;font:12px monospace;
-          cursor:pointer;padding:0 2px;flex-shrink:0">✕</button>
+          color:#ffd060;font:12px 'Segoe UI';padding:5px 10px;border-radius:4px;
+          cursor:pointer;flex-shrink:0;min-height:36px">${_t('waypoints.teleport_btn')}</button>
+        <button data-del="${i}" title="${_t('waypoints.delete_btn_title')}"
+          style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+          color:#888;font:14px monospace;cursor:pointer;padding:0;flex-shrink:0;
+          width:36px;height:36px;border-radius:4px;display:flex;align-items:center;
+          justify-content:center">✕</button>
       </div>
     `).join('');
 
@@ -1990,6 +2664,13 @@
         sendCmd({ cmd: 'delete_waypoint', index: +btn.dataset.del });
       });
     });
+    if (_wpPendingFocusLast && list.id === 'cdWpPopupList') {
+      _wpNavIndex = items.length - 1;
+      _wpPendingFocusLast = false;
+    } else if (_wpNavIndex >= items.length) {
+      _wpNavIndex = items.length - 1;
+    }
+    _wpApplyHighlight(list);
   }
 
   function renderWaypoints() {
@@ -1998,7 +2679,99 @@
     renderWaypointList(getWaypointPopupDoc()?.getElementById('cdWpPopupList'));
   }
 
+  function waypointNavInput(action) {
+    const doc = getWaypointPopupDoc();
+    if (!doc) return;
+    const list = doc.getElementById('cdWpPopupList');
+    if (!list) return;
+    const rows = list.querySelectorAll('[data-tp]');
+    const count = rows.length;
+    if (action === 'up') {
+      const filterFocused = doc.activeElement === doc.getElementById('cdWpPopupFilter');
+      if (filterFocused || _wpNavIndex === 0) {
+        doc.activeElement?.blur();
+        _wpNavIndex = -1;
+        _wpApplyHighlight(list);
+        _wpFocusSaveBtn(doc);
+      } else {
+        _wpNavIndex = count === 0 ? -1 : (_wpNavIndex < 0 ? count - 1 : _wpNavIndex - 1);
+        _wpApplyHighlight(list);
+      }
+    } else if (action === 'down') {
+      _wpClearSaveBtnFocus(doc);
+      _wpNavIndex = count === 0 ? -1 : (_wpNavIndex >= count - 1 ? 0 : _wpNavIndex + 1);
+      _wpApplyHighlight(list);
+    } else if (action === 'select') {
+      if (doc.activeElement === doc.getElementById('cdWpPopupSave')) {
+        _triggerWpSave(doc);
+      } else if (_wpNavIndex >= 0 && _wpNavIndex < count) {
+        rows[_wpNavIndex].click();
+      }
+    } else if (action === 'delete') {
+      if (_wpNavIndex >= 0 && _wpNavIndex < count) {
+        rows[_wpNavIndex].closest('div')?.querySelector('[data-del]')?.click();
+      }
+    } else if (action === 'close') {
+      try { if (waypointPopup && !waypointPopup.closed) waypointPopup.close(); } catch (_) {}
+      waypointPopup = null;
+      _wpNavIndex = -1;
+      sendCmd({ cmd: 'waypoints_state', open: false });
+    }
+  }
+
+  function toggleWaypointPanelFromHotkey() {
+    // Full mode deliberately has no secondary browser window.  The old
+    // popup-based code below is retained for legacy Qt mode only.
+    if (window.__cdWebView2) {
+      ensureWaypointPanel();
+      const panel = document.getElementById('cdWpPanel');
+      if (!panel) return;
+      const visible = panel.style.display !== 'none';
+      panel.style.display = visible ? 'none' : 'flex';
+      sendCmd({ cmd: 'waypoints_state', open: !visible });
+      return;
+    }
+    try {
+      if (waypointPopup && !waypointPopup.closed) {
+        waypointPopup.close();
+        waypointPopup = null;
+        _wpNavIndex = -1;
+        sendCmd({ cmd: 'waypoints_state', open: false });
+        return;
+      }
+    } catch (_) { waypointPopup = null; }
+    if (ensureWaypointPopup()) {
+      sendCmd({ cmd: 'waypoints_state', open: true });
+    }
+  }
+
   // ── Layout adaptativo para janela circular ────────────────────────
+  function ensureRoundDragHandle() {
+    let handle = document.getElementById('cdRoundDragHandle');
+    if (handle) return handle;
+    handle = document.createElement('button');
+    handle.id = 'cdRoundDragHandle';
+    handle.type = 'button';
+    handle.title = 'Drag circular window';
+    handle.textContent = '✥';
+    handle.style.cssText = 'position:fixed;top:9px;left:50%;transform:translateX(-50%);' +
+      'z-index:10005;width:38px;height:24px;display:none;align-items:center;justify-content:center;' +
+      'border-radius:12px;border:1px solid rgba(255,208,96,.4);background:rgba(12,12,18,.72);' +
+      'color:#ffd060;font:15px Segoe UI;cursor:move;opacity:.48;transition:opacity .15s';
+    handle.addEventListener('mouseenter', () => { handle.style.opacity = '1'; });
+    handle.addEventListener('mouseleave', () => { handle.style.opacity = '.48'; });
+    handle.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      if (window.pywebview && window.pywebview.api &&
+          typeof window.pywebview.api.drag_window === 'function') {
+        window.pywebview.api.drag_window();
+      }
+    });
+    document.body.appendChild(handle);
+    return handle;
+  }
+
   function applyRoundLayout(isRound) {
     ensureStatusToggleBtn();
     ensureWpToggleBtn();
@@ -2008,9 +2781,11 @@
     const follow = document.getElementById('cdOvFollowFloat');
     const wpBtn  = document.getElementById('cdWpToggle');
     const tpBtn  = document.getElementById('cdCenterTp');
+    const dragHandle = ensureRoundDragHandle();
     if (!bar || !wpBtn || !tpBtn) return;
 
     if (isRound) {
+      dragHandle.style.display = 'flex';
       // Botão waypoints: remove position:fixed para entrar no flow do bar
       if (wpBtn.parentNode !== bar) bar.insertBefore(wpBtn, bar.firstChild);
       if (tpBtn.parentNode !== bar) bar.insertBefore(tpBtn, wpBtn.nextSibling);
@@ -2078,17 +2853,22 @@
         });
       }
     } else {
+      dragHandle.style.display = 'none';
       // Restaura waypoints button para body com estilo original
       if (wpBtn.parentNode === bar) document.body.appendChild(wpBtn);
       if (tpBtn.parentNode === bar) document.body.appendChild(tpBtn);
-      wpBtn.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:10000;' +
+      const wpPosition = window.__cdMapProvider === 'greymane'
+        ? 'left:300px;' : 'left:12px;';
+      const tpPosition = window.__cdMapProvider === 'greymane'
+        ? 'left:344px;' : 'left:56px;';
+      wpBtn.style.cssText = 'position:fixed;bottom:12px;' + wpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(255,208,96,.35);' +
         'color:#ffd060;font:16px "Segoe UI";cursor:pointer;' +
         'box-shadow:0 3px 12px rgba(0,0,0,.5);' +
         'display:flex;align-items:center;justify-content:center;' +
         'backdrop-filter:blur(4px);transition:border-color .15s,background .15s';
-      tpBtn.style.cssText = 'position:fixed;bottom:12px;left:56px;z-index:10000;' +
+      tpBtn.style.cssText = 'position:fixed;bottom:12px;' + tpPosition + 'z-index:10000;' +
         'width:36px;height:36px;border-radius:50%;' +
         'background:rgba(12,12,18,.9);border:1px solid rgba(100,160,255,.4);' +
         'color:#80b4ff;font:18px "Segoe UI";cursor:pointer;' +
@@ -2137,18 +2917,39 @@
     } catch (_) {}
   }
 
+  // Fecha a sidebar e re-tenta ate ela realmente fechar. O botao .sidebar-close
+  // vem no HTML server-rendered, mas o handler de clique do React so e ligado
+  // depois da hydration. Um unico clique cedo (assim que o elemento aparece)
+  // cai num botao ainda sem handler e nao faz nada. Aqui re-clicamos a cada
+  // 300ms ate a classe 'closed' aparecer (ou ate o timeout), parando assim que
+  // fecha para nao brigar com o usuario caso ele reabra depois.
+  function autoHideSidebar(id, timeout = 20000) {
+    const deadline = Date.now() + timeout;
+    const tick = () => {
+      const sidebar = document.getElementById(id);
+      if (sidebar && !sidebar.classList.contains('closed')) {
+        const btn = sidebar.querySelector('.sidebar-close');
+        if (btn) btn.click();
+      }
+      const closed = sidebar && sidebar.classList.contains('closed');
+      if (!closed && Date.now() < deadline) setTimeout(tick, 300);
+    };
+    tick();
+  }
+
   function applySettings(cfg) {
     if (cfg.autoHideFound) {
       waitForElement('#toggle-found', (btn) => {
         if (!btn.classList.contains('disabled')) btn.click();
       });
     }
-    if (cfg.autoHideLeftSidebar) {
-      waitForElement('.sidebar-close .left-arrow, .sidebar-close', (btn) => btn.click());
-    }
-    if (cfg.autoHideRightSidebar) {
-      waitForElement('#right-sidebar .sidebar-close', (btn) => btn.click());
-    }
+    [
+      ['left-sidebar', cfg.autoHideLeftSidebar],
+      ['right-sidebar', cfg.autoHideRightSidebar],
+    ].forEach(([id, enabled]) => {
+      if (!enabled) return;
+      autoHideSidebar(id);
+    });
 
     const waitMap = setInterval(() => {
       const m = getMap();
@@ -2178,6 +2979,8 @@
 
   // ── Detecção de login necessário ───────────────────────────────────
   (function detectLogin() {
+    // Full mode uses Edge WebView2. The old custom scheme is only handled by
+    // the legacy Qt browser and otherwise launches an external browser.
     if (window.__cdWebView2) return;
     if (window.location.pathname.includes('login')) return;
     setTimeout(() => {
@@ -2190,6 +2993,7 @@
     }, 3000);
   })();
 
+  // Keep MapGenie login/register navigation inside the Edge WebView2 window.
   (function keepLoginInOverlay() {
     if (!window.__cdWebView2) return;
     const isMapGenie = (url) => {
@@ -2230,7 +3034,7 @@
       .mapboxgl-ctrl-bottom-right, #map-type-control { display: none !important; }
       #cdCenterCrosshair {
         position:fixed;inset:0;width:100vw;height:100vh;
-        pointer-events:none;z-index:1;
+        pointer-events:none;z-index:9990 !important;
       }
       #cdCenterCrosshair::before,
       #cdCenterCrosshair::after {
@@ -2239,13 +3043,15 @@
         box-shadow:0 0 4px rgba(0,0,0,.55);
       }
       #cdCenterCrosshair::before {
-        top:50%;left:0;width:100%;height:1px;
+        top:var(--cd-crosshair-y, 50vh);left:0;width:100%;height:1px;
         transform:translateY(-50%);
       }
       #cdCenterCrosshair::after {
-        top:0;left:50%;width:1px;height:100%;
+        top:0;left:var(--cd-crosshair-x, 50vw);width:1px;height:100%;
         transform:translateX(-50%);
       }
+      #cdCenterCrosshair::before,
+      #cdCenterCrosshair::after { display:none; }
     `;
     document.head.appendChild(s);
   })();
@@ -2276,6 +3082,7 @@
   ensureStatusToggleBtn();
   updatePanel();
   ensureWpToggleBtn();
+  ensureNearbyToggleBtn();
   ensureCenterTeleportBtn();
   ensureCenterTeleportPanel();
   applyRoundLayout(!!(window.__cdSettings && window.__cdSettings.roundWindow));
@@ -2283,6 +3090,16 @@
   ensureWaypointPanel();
   renderWaypoints();
   updateTeleportVisibility();
+  // Greymane's React hydration may remove early body children. Restore only
+  // missing Companion controls without disturbing panels that are already open.
+  setInterval(() => {
+    createCenterCrosshair();
+    ensureWpToggleBtn();
+    ensureCenterTeleportBtn();
+    ensureNearbyToggleBtn();
+    updateTeleportVisibility();
+    if (window.__cdUpdateNearbyControls) window.__cdUpdateNearbyControls();
+  }, 500);
   connect();
   setInterval(() => {
     if (window.mapManager && typeof window.mapManager.updateFoundLocationsStyle === 'function')

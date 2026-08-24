@@ -73,6 +73,72 @@
     open_nearby: 'Nearby', open_waypoints: 'Waypoints',
   };
 
+  function _setFullSettingsStatus(message, ok = true) {
+    const status = document.getElementById('cdFullSettingsStatus');
+    if (!status) return;
+    status.textContent = message || '';
+    status.style.color = ok ? '#70df92' : '#ff7777';
+  }
+
+  function setCalibrationMode(enabled) {
+    calibrationMode = !!enabled;
+    const btn = document.getElementById('cdCalibrateMarker');
+    if (btn) btn.textContent = calibrationMode
+      ? 'Click your exact position on the map…' : 'Calibrate marker';
+    if (!calibrationMode) return;
+
+    const liveMap = getMap();
+    if (!liveMap || typeof liveMap.once !== 'function') {
+      calibrationMode = false;
+      if (btn) btn.textContent = 'Calibrate marker';
+      _setFullSettingsStatus('Map is not ready yet. Try again in a moment.', false);
+      return;
+    }
+
+    _setFullSettingsStatus('Now click your exact in-game position on the map.');
+    liveMap.once('click', (event) => {
+      if (!calibrationMode) return;
+      calibrationMode = false;
+      if (btn) btn.textContent = 'Calibrate marker';
+      const lngLat = event && event.lngLat;
+      if (!lngLat) {
+        _setFullSettingsStatus('The map click did not provide coordinates.', false);
+        return;
+      }
+      sendCmd({
+        cmd: 'add_calibration',
+        lng: lngLat.lng,
+        lat: lngLat.lat,
+        realm: lastPos && lastPos.realm ? lastPos.realm : 'pywel',
+      });
+      _setFullSettingsStatus('Calibration point sent. Move in game to refresh the marker.');
+    });
+  }
+
+  async function setNativeRoundWindow(enabled) {
+    const checkbox = document.getElementById('cdRoundWindow');
+    try {
+      if (!(window.pywebview && window.pywebview.api &&
+            typeof window.pywebview.api.set_round_window === 'function')) {
+        throw new Error('Round window is available only in the Full desktop version.');
+      }
+      const result = await window.pywebview.api.set_round_window(!!enabled);
+      if (!result || result.ok === false) {
+        throw new Error(result && result.error ? result.error : 'Cannot change the window shape.');
+      }
+      if (!window.__cdSettings) window.__cdSettings = {};
+      window.__cdSettings.roundWindow = !!result.roundWindow;
+      if (checkbox) checkbox.checked = !!result.roundWindow;
+      applyRoundLayout(!!result.roundWindow);
+      _setFullSettingsStatus(result.roundWindow
+        ? 'Circular minimap enabled. Drag it using the handle at the top.'
+        : 'Full window restored.');
+    } catch (error) {
+      if (checkbox) checkbox.checked = !enabled;
+      _setFullSettingsStatus(String(error && (error.message || error)), false);
+    }
+  }
+
   function _hotkeyText(hk) {
     const mods = (hk.mods || []).map(m => ({16:'Shift',17:'Ctrl',18:'Alt'}[m])).filter(Boolean);
     const vk = hk.vk;
@@ -111,6 +177,12 @@
       font:12px/1.4 'Segoe UI',system-ui,sans-serif;display:none`;
     panel.innerHTML = `<div style="display:flex;align-items:center;margin-bottom:8px"><b style="color:#ffd060;flex:1">⚙ Settings</b><button id="cdHkClose" style="border:0;background:transparent;color:#bbb;font:18px Segoe UI;cursor:pointer">×</button></div>
       <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdNearbyEnabled" type="checkbox"> Nearby — show radius and list</label>
+      <label style="display:flex;align-items:center;gap:7px;margin:0 0 9px;color:#ddd;cursor:pointer"><input id="cdRoundWindow" type="checkbox"> Circular minimap window</label>
+      <div style="display:flex;gap:6px;margin:0 0 8px">
+        <button id="cdCalibrateMarker" style="flex:1;background:#20202b;color:#ffd060;border:1px solid rgba(255,208,96,.35);border-radius:4px;padding:6px;cursor:pointer">Calibrate marker</button>
+        <button id="cdResetCalibration" style="background:#20202b;color:#ddd;border:1px solid #444;border-radius:4px;padding:6px;cursor:pointer">Reset</button>
+      </div>
+      <div id="cdFullSettingsStatus" style="min-height:14px;color:#999;font-size:10px;margin:0 0 8px"></div>
       <div style="color:#999;font-size:11px;margin-bottom:8px">Click a field, then press a key combination.</div>
       ${Object.entries(_hotkeyNames).map(([id, title]) => `<label style="display:block;margin:6px 0;color:#ccc">${title}<input id="cdHk_${id}" data-hotkey="${id}" readonly style="box-sizing:border-box;width:100%;margin-top:2px;background:#191923;color:#ffd060;border:1px solid rgba(255,208,96,.3);border-radius:4px;padding:5px 7px;cursor:pointer"></label>`).join('')}
       <button id="cdHkSave" style="width:100%;margin-top:7px;background:rgba(255,208,96,.15);color:#ffd060;border:1px solid rgba(255,208,96,.45);border-radius:4px;padding:6px;cursor:pointer">Save hotkeys</button>
@@ -122,6 +194,22 @@
       if (typeof setNearbyControlsEnabled === 'function') {
         setNearbyControlsEnabled(nearbyEnabled.checked);
       }
+    });
+    const roundWindow = document.getElementById('cdRoundWindow');
+    roundWindow.checked = !!(window.__cdSettings && window.__cdSettings.roundWindow);
+    roundWindow.addEventListener('change', () => {
+      setNativeRoundWindow(roundWindow.checked);
+    });
+    document.getElementById('cdCalibrateMarker').addEventListener('click', () => {
+      setCalibrationMode(!calibrationMode);
+    });
+    document.getElementById('cdResetCalibration').addEventListener('click', () => {
+      setCalibrationMode(false);
+      sendCmd({
+        cmd: 'reset_calibration',
+        realm: lastPos && lastPos.realm ? lastPos.realm : 'pywel',
+      });
+      _setFullSettingsStatus('Calibration reset. Move in game to refresh the marker.');
     });
     document.getElementById('cdHkClose').addEventListener('click', () => {
       panel.style.display = 'none';

@@ -153,12 +153,12 @@ transformation calibrated with reference points.
 **Default calibrations** (Pywel and Abyss) are built-in.
 
 **To recalibrate:**
-1. Open the full panel and click **🎯 Calibration: OFF** to enable the mode
-2. In-game, go to a recognizable location
-3. On the map (MapGenie), click exactly on that location
+1. In Full mode, click the **⚙ Settings** button in the bottom-right corner
+2. In-game, go to a recognizable location and wait for the player coordinates
+3. Click **Calibrate marker**, then click that exact location on the map
 4. The point is saved to `%LOCALAPPDATA%\CD_Teleport\cd_calibration_pywel.json`
 5. With **≥ 3 points**, the affine calibration replaces the default linear one
-6. To reset: send `reset_calibration` command via WebSocket
+6. To remove saved points, click **Reset** next to the calibration button
 
 ---
 
@@ -173,7 +173,7 @@ Accessible via the `⚙` button in the bar (hover at the top of the window):
 | Hide Found Locations | ✅ | Automatically disables "Found Locations" |
 | Hide Left Panel | ☐ | Closes the left sidebar on load |
 | Hide Right Panel | ☐ | Closes the right sidebar on load |
-| Circular/oval window | ☐ | Applies an elliptical mask; resizes to 240×240 |
+| Circular/oval window | ☐ | Turns WebView2 Full mode into a movable circular minimap and remembers both window layouts |
 | Follow game window | ☐ | Moves the overlay along with the game window |
 | Transparency | 0% | Window opacity (0% to 90%) |
 | Direction arrow | Auto | `Auto` / `Entity vector` / `Position delta` |
